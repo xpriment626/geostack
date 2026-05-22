@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Geostack — Run Inspector</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; background: #0b0c0e; color: #e6e7e9; }
+  header { padding: 14px 20px; border-bottom: 1px solid #1d2025; display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: #7c8190; font-size: 12px; }
+  .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 0; height: calc(100vh - 51px); }
+  .left { border-right: 1px solid #1d2025; overflow-y: auto; padding: 16px; }
+  .right { overflow-y: auto; padding: 20px 24px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #7c8190; margin: 18px 0 8px; }
+  label { display: block; font-size: 12px; color: #9aa0ad; margin: 8px 0 3px; }
+  input, select, textarea { width: 100%; background: #121419; border: 1px solid #262b33; color: #e6e7e9; border-radius: 6px; padding: 7px 9px; font: inherit; }
+  textarea { resize: vertical; min-height: 56px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { background: #2f6feb; color: #fff; border: 0; border-radius: 6px; padding: 9px 14px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 12px; width: 100%; }
+  button.secondary { background: #1b1e24; color: #b9c0cc; width: auto; padding: 5px 10px; margin: 0; font-weight: 500; }
+  button:disabled { opacity: .5; cursor: default; }
+  .runlist { list-style: none; padding: 0; margin: 0; }
+  .runlist li { padding: 9px 10px; border: 1px solid #1d2025; border-radius: 7px; margin-bottom: 6px; cursor: pointer; }
+  .runlist li:hover { border-color: #2f6feb; }
+  .runlist li.active { border-color: #2f6feb; background: #11161f; }
+  .runlist .rid { font-family: ui-monospace, monospace; font-size: 11px; color: #9aa0ad; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .b-intent { background: #2a2f1a; color: #d6e07a; } .b-research { background: #14233a; color: #6fb6ff; }
+  .b-synthesis { background: #2a1a33; color: #d29bff; } .b-done { background: #143420; color: #6fe09a; }
+  .b-failed { background: #3a1414; color: #ff8a8a; }
+  .timeline { display: flex; gap: 6px; align-items: center; margin: 6px 0 18px; flex-wrap: wrap; }
+  .timeline .step { padding: 3px 10px; border-radius: 6px; background: #15181d; color: #565c68; font-size: 12px; }
+  .timeline .step.on { color: #e6e7e9; }
+  .timeline .arrow { color: #3a3f47; }
+  table { width: 100%; border-collapse: collapse; margin: 4px 0 16px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1a1d22; }
+  th { color: #7c8190; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  pre.output { background: #0e1014; border: 1px solid #1d2025; border-radius: 8px; padding: 14px; white-space: pre-wrap; word-break: break-word; max-height: 460px; overflow-y: auto; }
+  .muted { color: #7c8190; }
+  .total { font-weight: 700; color: #6fe09a; }
+  .empty { color: #565c68; padding: 30px 0; text-align: center; }
+  .g-grounded { color: #6fe09a; } .g-flagged { color: #ffb86b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Geostack</h1><span class="sub">Run Inspector — GEO Content Fleet</span>
+</header>
+<div class="wrap">
+  <div class="left">
+    <h2>New run</h2>
+    <label>Project ID</label><input id="projectId" value="agentic-memory" />
+    <label>Anchor claim</label><textarea id="anchorClaim">Durable agentic memory requires structural curation (dedup + reorganization), not merely larger context windows</textarea>
+    <label>Target query</label><input id="targetQuery" value="how should AI agents manage long-term memory across sessions" />
+    <div class="row2">
+      <div><label>Mode</label><select id="mode"><option>single</option><option>batch</option></select></div>
+      <div><label>Depth</label><select id="depth"><option>deep-dive</option><option>listicle</option></select></div>
+    </div>
+    <label>Audience</label><input id="audience" value="engineers building multi-agent systems" />
+    <label>Tone</label><input id="tone" value="authoritative, technical, plain" />
+    <button id="startBtn" onclick="startRun()">Start run</button>
+
+    <h2 style="display:flex;justify-content:space-between;align-items:center">Recent runs <button class="secondary" onclick="loadRuns()">↻</button></h2>
+    <ul class="runlist" id="runlist"></ul>
+  </div>
+  <div class="right" id="detail"><div class="empty">Select or start a run.</div></div>
+</div>
+
+<script>
+const STAGES = ['intent', 'research', 'synthesis', 'done'];
+let selectedId = null, pollTimer = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json();
+}
+const fmtCost = (n) => '$' + (Number(n) || 0).toFixed(5);
+const fmtDur = (a, b) => (a && b) ? ((b - a) / 1000).toFixed(1) + 's' : (a ? 'open' : '—');
+const shortId = (s) => s ? String(s).slice(0, 8) : '';
+
+async function loadRuns() {
+  try {
+    const { runs } = await api('/runs');
+    const ul = document.getElementById('runlist');
+    ul.innerHTML = runs.length ? '' : '<li class="muted">no runs yet</li>';
+    for (const r of runs) {
+      const li = document.createElement('li');
+      if (r.id === selectedId) li.className = 'active';
+      li.innerHTML = `<div class="rid">${r.id}</div><span class="badge b-${r.stage}">${r.stage}</span> <span class="muted">${r.project_id || ''}</span>`;
+      li.onclick = () => selectRun(r.id);
+      ul.appendChild(li);
+    }
+  } catch (e) { /* conductor may be mid-restart */ }
+}
+
+async function startRun() {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true; btn.textContent = 'Starting…';
+  try {
+    const intent = {
+      projectId: val('projectId'), anchorClaim: val('anchorClaim'), targetQuery: val('targetQuery'),
+      formatType: { mode: val('mode'), depth: val('depth') },
+      audience: val('audience'), tone: val('tone'),
+      raw: '# Brief\n\n' + val('anchorClaim')
+    };
+    const { runId } = await api('/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ intent }) });
+    selectRun(runId); loadRuns();
+  } catch (e) { alert('Start failed: ' + e.message); }
+  btn.disabled = false; btn.textContent = 'Start run';
+}
+const val = (id) => document.getElementById(id).value;
+
+async function selectRun(id) {
+  selectedId = id;
+  if (pollTimer) clearInterval(pollTimer);
+  await renderRun();
+  loadRuns();
+  pollTimer = setInterval(renderRun, 3000);
+}
+
+async function renderRun() {
+  let run;
+  try { run = await api('/runs/' + selectedId); } catch (e) { return; }
+  const stage = run.stage;
+  if (stage === 'done' || stage === 'failed') { if (pollTimer) clearInterval(pollTimer); }
+
+  const timeline = STAGES.map((s, i) =>
+    `<span class="step ${reached(stage, s) ? 'on' : ''}">${s}</span>` + (i < STAGES.length - 1 ? '<span class="arrow">→</span>' : '')
+  ).join('');
+
+  const sessions = (run.sessions || []).map(s =>
+    `<tr><td><span class="badge b-${s.stage}">${s.stage}</span></td><td class="mono">${shortId(s.coral_session_id)}</td><td class="num mono">${fmtDur(s.started_at, s.closed_at)}</td></tr>`
+  ).join('') || '<tr><td colspan="3" class="muted">no sessions yet</td></tr>';
+
+  const turns = run.agentTurns || [];
+  const totalCost = turns.reduce((a, t) => a + (Number(t.cost_usd) || 0), 0);
+  const turnRows = turns.map(t =>
+    `<tr><td><span class="badge b-${t.stage}">${t.stage}</span></td><td>${t.agent}</td><td class="mono muted">${t.model}</td><td class="num">${t.input_tokens}</td><td class="num">${t.output_tokens}</td><td class="num">${fmtCost(t.cost_usd)}</td></tr>`
+  ).join('') || '<tr><td colspan="6" class="muted">no turns reported yet</td></tr>';
+
+  const out = run.output;
+  const grounding = (out && out.grounding || []).map(g =>
+    `<li class="g-${g.status}">[${g.status}] ${esc(g.claim)}${g.reason ? ' — <span class="muted">' + esc(g.reason) + '</span>' : ''}</li>`
+  ).join('');
+
+  document.getElementById('detail').innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="badge b-${stage}">${stage}</span>
+      <span class="mono muted">${run.id}</span>
+      ${run.error ? '<span class="g-flagged">' + esc(run.error) + '</span>' : ''}
+    </div>
+    <div class="timeline">${timeline}</div>
+
+    <h2>Sessions <span class="muted">(spin-up/close lifecycle)</span></h2>
+    <table><thead><tr><th>Stage</th><th>Coral session</th><th>Duration</th></tr></thead><tbody>${sessions}</tbody></table>
+
+    <h2>Agent turns <span class="muted">(cost · ${turns.length} turns · total <span class="total">${fmtCost(totalCost)}</span>)</span></h2>
+    <table><thead><tr><th>Stage</th><th>Agent</th><th>Model</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>${turnRows}</tbody></table>
+
+    <h2>Output</h2>
+    ${out ? `<pre class="output">${esc(out.markdown || '')}</pre>${grounding ? '<h2>Grounding</h2><ul>' + grounding + '</ul>' : ''}` : '<div class="muted">no output yet…</div>'}
+  `;
+}
+
+function reached(stage, step) {
+  if (stage === 'failed') return STAGES.indexOf(step) <= STAGES.indexOf('research');
+  return STAGES.indexOf(step) <= STAGES.indexOf(stage);
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+loadRuns();
+setInterval(loadRuns, 5000);
+</script>
+</body>
+</html>

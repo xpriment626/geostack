@@ -1,0 +1,26 @@
+edition = 4
+
+[agent]
+name = "geo-agent"
+version = "0.1.0"
+description = "Synthesis core (executable, strong model). Ingests the structurally-collapsed research artifact and writes a GEO-ready draft: citation-dense, machine-parseable, anchored to the target query. Self-validates, then hands to verify."
+summary = "GEO synthesis core."
+readme = "Executable Mastra agent. Worker owns wait_for_mention. Strong model — model capability is the primary mitigant for synthesis quality. OpenRouter-direct via MODEL_NAME."
+
+[agent.license]
+type = "spdx"
+expression = "MIT"
+
+# Smoke-test phase: all agents on deepseek-v4-pro (75% promo) to exercise
+# thinking-model handling. Prior (strong) default: anthropic/claude-sonnet-4.6 —
+# restore for real synthesis runs. REASONING_EFFORT can go higher for geo
+# specifically (medium/high) when synthesis quality matters; low for smoke.
+[options]
+MODEL_NAME = { type = "string", default = "deepseek/deepseek-v4-pro" }
+MODEL_BASE_URL = { type = "string", default = "https://openrouter.ai/api/v1" }
+REASONING_EFFORT = { type = "string", default = "low" }
+
+[runtimes.executable]
+path = "bash"
+arguments = ["startup.sh"]
+transport = "streamable_http"

@@ -1,0 +1,25 @@
+edition = 4
+
+[agent]
+name = "verify-agent"
+version = "0.1.0"
+description = "Grounding gate (executable). Stateless relative to intent: checks each claim in geo's draft against the cited source artifacts, marks grounded/flagged per claim, and routes back to geo (bounded rounds) or forward to style."
+summary = "Per-claim grounding gate."
+readme = "Executable Mastra agent. Worker owns wait_for_mention. Grounding only — does not evaluate intent fit. OpenRouter-direct via MODEL_NAME."
+
+[agent.license]
+type = "spdx"
+expression = "MIT"
+
+# Smoke-test phase: all agents on deepseek-v4-pro (75% promo) to exercise
+# thinking-model handling. Prior default: anthropic/claude-haiku-4.5.
+# REASONING_EFFORT low keeps smoke runs fast while still round-tripping reasoning.
+[options]
+MODEL_NAME = { type = "string", default = "deepseek/deepseek-v4-pro" }
+MODEL_BASE_URL = { type = "string", default = "https://openrouter.ai/api/v1" }
+REASONING_EFFORT = { type = "string", default = "low" }
+
+[runtimes.executable]
+path = "bash"
+arguments = ["startup.sh"]
+transport = "streamable_http"

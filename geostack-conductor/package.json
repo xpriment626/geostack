@@ -1,0 +1,23 @@
+{
+  "name": "geostack-conductor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Geostack thin backend conductor — off-Coral intent extraction + orchestration of short-lived Coral work sessions (research, synthesis), with the Turso run archive.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@libsql/client": "^0.15.0",
+    "hono": "^4.7.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}

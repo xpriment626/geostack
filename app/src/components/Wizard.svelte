@@ -195,60 +195,34 @@
       session = await createSession({
         agentGraphRequest: {
           agents: [
+            // Geostack executable-runtime agents. Each agent owns its own
+            // OpenRouter-direct LLM client; the model is set per-agent via the
+            // MODEL_NAME option in its coral-agent.toml (swap there for a
+            // cost:capability trial). No proxy overrides on this runtime.
             {
               id: { name: BRIEF_AGENT, version: '0.1.0', registrySourceId: { type: 'local' } },
               name: BRIEF_AGENT,
-              provider: { type: 'local', runtime: 'prototype' },
-              proxies: {
-                MAIN: {
-                  configurationName: 'openrouter-koog-router',
-                  modelName: 'anthropic/claude-haiku-4.5',
-                },
-              },
+              provider: { type: 'local', runtime: 'executable' },
             },
             {
               id: { name: SEARCH_AGENT, version: '0.1.0', registrySourceId: { type: 'local' } },
               name: SEARCH_AGENT,
-              provider: { type: 'local', runtime: 'prototype' },
-              proxies: {
-                MAIN: {
-                  configurationName: 'openrouter-koog',
-                  modelName: 'gpt-5.4-mini',
-                },
-              },
+              provider: { type: 'local', runtime: 'executable' },
             },
             {
               id: { name: CONTENT_AGENT, version: '0.1.0', registrySourceId: { type: 'local' } },
               name: CONTENT_AGENT,
-              provider: { type: 'local', runtime: 'prototype' },
-              proxies: {
-                MAIN: {
-                  configurationName: 'openrouter-koog',
-                  modelName: 'gpt-5.4-mini',
-                },
-              },
+              provider: { type: 'local', runtime: 'executable' },
             },
             {
               id: { name: THUMBNAIL_AGENT, version: '0.1.0', registrySourceId: { type: 'local' } },
               name: THUMBNAIL_AGENT,
-              provider: { type: 'local', runtime: 'prototype' },
-              proxies: {
-                MAIN: {
-                  configurationName: 'openrouter-koog',
-                  modelName: 'gpt-5.4-mini',
-                },
-              },
+              provider: { type: 'local', runtime: 'executable' },
             },
             {
               id: { name: TEMPLATE_AGENT, version: '0.1.0', registrySourceId: { type: 'local' } },
               name: TEMPLATE_AGENT,
-              provider: { type: 'local', runtime: 'prototype' },
-              proxies: {
-                MAIN: {
-                  configurationName: 'openrouter-koog-router',
-                  modelName: 'anthropic/claude-haiku-4.5',
-                },
-              },
+              provider: { type: 'local', runtime: 'executable' },
             },
             {
               id: { name: 'puppet', version: '1.0.0', registrySourceId: { type: 'local' } },

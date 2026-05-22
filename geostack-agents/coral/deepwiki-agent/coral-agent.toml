@@ -1,0 +1,25 @@
+edition = 4
+
+[agent]
+name = "deepwiki-agent"
+version = "0.1.0"
+description = "GEO research fan-out (executable). DeepWiki-powered: pulls implementation-level detail from open-source codebases to ground the anchor claim in shipped code, not docs. Emits a research_result envelope."
+summary = "DeepWiki implementation-level grounding."
+readme = "Executable Mastra agent. Worker owns wait_for_mention; acts on the intent artifact per turn. OpenRouter-direct via MODEL_NAME."
+
+[agent.license]
+type = "spdx"
+expression = "MIT"
+
+# Smoke-test phase: all agents on deepseek-v4-pro (75% promo) to exercise
+# thinking-model handling. Prior default: openai/gpt-5.4-mini.
+# REASONING_EFFORT low keeps smoke runs fast while still round-tripping reasoning.
+[options]
+MODEL_NAME = { type = "string", default = "deepseek/deepseek-v4-pro" }
+MODEL_BASE_URL = { type = "string", default = "https://openrouter.ai/api/v1" }
+REASONING_EFFORT = { type = "string", default = "low" }
+
+[runtimes.executable]
+path = "bash"
+arguments = ["startup.sh"]
+transport = "streamable_http"
