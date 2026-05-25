@@ -1,5 +1,6 @@
 <script lang="ts">
   export let onNewPost: () => void
+  export let onAdvanced: () => void = () => {}
 </script>
 
 <section class="landing">
@@ -8,6 +9,7 @@
     <p class="tagline">Create research-enriched newsletter posts instantly</p>
   </header>
   <button class="primary" on:click={onNewPost}>New Post</button>
+  <button class="link" on:click={onAdvanced}>Advanced view — run inspector →</button>
 </section>
 
 <style>
@@ -66,5 +68,20 @@
   button.primary:active {
     transform: translateY(2px);
     box-shadow: 0 1px 0 0 #111;
+  }
+
+  button.link {
+    background: none;
+    border: none;
+    color: #555;
+    font-size: 0.9rem;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    padding: 0;
+  }
+
+  button.link:hover {
+    color: #111;
   }
 </style>

@@ -18,6 +18,14 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': { target: CORAL_HTTP, changeOrigin: true },
         '/ws': { target: CORAL_WS, ws: true, changeOrigin: true },
+        // GEO Content Fleet conductor (run archive + orchestration API).
+        // Namespaced so the inspector view fetches /conductor/runs etc.
+        // without colliding with any app route, mirroring the Coral proxy.
+        '/conductor': {
+          target: 'http://localhost:8787',
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/conductor/, ''),
+        },
         // Replicate proxy — adds the bearer token server-side so the browser
         // never sees it, sidesteps CORS, and lets us treat Replicate as a
         // first-party endpoint at /replicate/*.

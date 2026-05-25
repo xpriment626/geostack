@@ -8,9 +8,6 @@ try {
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
 import { IntentArtifact, type RunState } from './types.js'
 import { runProduction } from './orchestrator.js'
 import {
@@ -24,7 +21,6 @@ import {
 	listRuns
 } from './db.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const safeJson = (v: unknown) => {
 	if (typeof v !== 'string') return v ?? null
 	try {
@@ -40,19 +36,13 @@ const safeJson = (v: unknown) => {
  * Owns the off-Coral intent flow + orchestration of short-lived Coral work
  * sessions (research → synthesis), holding artifacts between them. HTTP surface
  * + in-memory run registry; the Turso archive replaces the in-memory map next (#12).
+ *
+ * API-only: the run-inspector UI now lives in the Svelte app (app/src/components/
+ * RunInspector.svelte), which reaches these routes via the /conductor Vite proxy.
+ * inspector.html is kept in this dir as a standalone reference only.
  */
 
 const app = new Hono()
-
-// Self-contained run-inspector UI (read at startup; served at /).
-const INSPECTOR_HTML = (() => {
-	try {
-		return readFileSync(join(__dirname, 'inspector.html'), 'utf-8')
-	} catch {
-		return '<!doctype html><title>Geostack</title><p>inspector.html missing</p>'
-	}
-})()
-app.get('/', (c) => c.html(INSPECTOR_HTML))
 
 // In-memory run registry (live runs). Turso is the durable archive.
 const runs = new Map<string, RunState>()

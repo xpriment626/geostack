@@ -1,0 +1,10 @@
+{
+  "name": "geostack",
+  "private": true,
+  "type": "module",
+  "description": "Geostack — local-first GEO Content Fleet. One command boots the full stack.",
+  "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "start": "bun run scripts/dev.ts"
+  }
+}
