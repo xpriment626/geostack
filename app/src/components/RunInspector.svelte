@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import { marked } from 'marked'
+  import { getProject } from '../lib/api'
 
   let {
     onBack,
@@ -63,6 +64,11 @@
   let depth = $state<'deep-dive' | 'listicle'>('deep-dive')
   let audience = $state('engineers building multi-agent systems')
   let tone = $state('authoritative, technical, plain')
+
+  // When embedded in a project, the form seeds from the project's captured
+  // topic metadata (and offers its claims/queries as quick picks).
+  let projectClaims = $state<string[]>([])
+  let projectQueries = $state<string[]>([])
 
   let listTimer: ReturnType<typeof setInterval> | null = null
   let detailTimer: ReturnType<typeof setInterval> | null = null
@@ -153,9 +159,26 @@
     detail?.output?.markdown ? (marked.parse(detail.output.markdown) as string) : ''
   )
 
+  async function prefillFromProject() {
+    if (!projectId) return
+    try {
+      const p = await getProject(projectId)
+      if (p.audience) audience = p.audience
+      if (p.tone) tone = p.tone
+      const meta = p.topic_meta ? JSON.parse(p.topic_meta) : {}
+      projectClaims = Array.isArray(meta.anchorClaims) ? meta.anchorClaims : []
+      projectQueries = Array.isArray(meta.targetQueries) ? meta.targetQueries : []
+      if (projectClaims.length) anchorClaim = projectClaims[0]
+      if (projectQueries.length) targetQuery = projectQueries[0]
+    } catch {
+      /* keep defaults */
+    }
+  }
+
   onMount(() => {
     void loadRuns()
     listTimer = setInterval(loadRuns, 5000)
+    void prefillFromProject()
   })
   onDestroy(() => {
     if (listTimer) clearInterval(listTimer)
@@ -180,8 +203,18 @@
         <input bind:value={formProjectId} />
       {/if}
       <label>Anchor claim</label>
+      {#if projectClaims.length > 1}
+        <select class="pick" onchange={(e) => (anchorClaim = (e.currentTarget as HTMLSelectElement).value)}>
+          {#each projectClaims as cl}<option value={cl}>{cl.length > 64 ? cl.slice(0, 64) + '…' : cl}</option>{/each}
+        </select>
+      {/if}
       <textarea bind:value={anchorClaim}></textarea>
       <label>Target query</label>
+      {#if projectQueries.length > 1}
+        <select class="pick" onchange={(e) => (targetQuery = (e.currentTarget as HTMLSelectElement).value)}>
+          {#each projectQueries as q}<option value={q}>{q.length > 64 ? q.slice(0, 64) + '…' : q}</option>{/each}
+        </select>
+      {/if}
       <input bind:value={targetQuery} />
       <div class="row2">
         <div>
@@ -360,6 +393,7 @@
   }
   textarea { resize: vertical; min-height: 56px; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pick { margin-bottom: 6px; color: #9aa0ad; }
   button.start {
     background: #2f6feb;
     color: #fff;
