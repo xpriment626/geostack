@@ -14,7 +14,10 @@ export default defineConfig(({ mode }) => {
     plugins: [svelte()],
     envDir: '..',
     server: {
-      port: 5173,
+      // Pinned to 5174 (strict) so it never silently collides with a sibling
+      // project on the Vite default 5173 (e.g. fabrick).
+      port: 5174,
+      strictPort: true,
       proxy: {
         '/api': { target: CORAL_HTTP, changeOrigin: true },
         '/ws': { target: CORAL_WS, ws: true, changeOrigin: true },

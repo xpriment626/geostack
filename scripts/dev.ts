@@ -8,7 +8,7 @@
  *
  *   coral-server (pinned npx)  :5555   ← supervised child; spawns the agents
  *   conductor / engine + API   :8787   ← orchestration + Turso/libsql archive
- *   app (Vite UI)              :5173   ← the only port you actually open
+ *   app (Vite UI)              :5174   ← the only port you actually open
  *
  * Ctrl-C tears the entire process tree down cleanly (each child runs in its
  * own process group; we signal the group, then sweep the known ports).
@@ -35,7 +35,7 @@ const AGENTS_DIR = join(ROOT, 'geostack-agents')
 const CONDUCTOR_DIR = join(ROOT, 'geostack-conductor')
 const APP_DIR = join(ROOT, 'app')
 const AGENTS = ['exa-agent', 'deepwiki-agent', 'geo-agent', 'verify-agent', 'style-agent']
-const PORTS = [5555, 8787, 5173]
+const PORTS = [5555, 8787, 5174]
 
 // ---- pretty prefixed logging ------------------------------------------------
 const C = {
@@ -127,4 +127,4 @@ start('coral', 'npx', ['-y', CORAL_VERSION, 'server', 'start', '--', `--auth.key
 start('conductor', 'npm', ['start'], { PORT: '8787' }, CONDUCTOR_DIR)
 start('app', 'npm', ['run', 'dev'], {}, APP_DIR)
 
-log('launcher', `${C.dim}UI → http://localhost:5173   API → http://localhost:8787   coral → http://localhost:5555${C.reset}`)
+log('launcher', `${C.dim}UI → http://localhost:5174   API → http://localhost:8787   coral → http://localhost:5555${C.reset}`)
