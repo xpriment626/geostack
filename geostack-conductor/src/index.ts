@@ -1,4 +1,4 @@
-// Load geostack-conductor/.env (Turso creds etc.) if present — no dep needed.
+// Load geostack-conductor/.env (dev convenience) if present — no dep needed.
 try {
 	process.loadEnvFile()
 } catch {
@@ -11,15 +11,24 @@ import { randomUUID } from 'node:crypto'
 import { IntentArtifact, type RunState } from './types.js'
 import { runProduction } from './orchestrator.js'
 import {
-	dbEnabled,
+	isCloud,
 	initSchema,
 	persistRun,
 	recordSession,
 	recordAgentTurn,
 	getRun,
 	getRunArchive,
-	listRuns
+	listRuns,
+	createProject,
+	updateProject,
+	listProjects,
+	getProject
 } from './db.js'
+import { applyConfigToEnv, readConfig, writeConfig, redactedConfig, configPath, CONFIG_KEYS } from './local-config.js'
+
+// The single local config (~/.geostack/config) is the source of truth for keys
+// + storage; load it before anything reads process.env. Set via the Settings UI.
+applyConfigToEnv()
 
 const safeJson = (v: unknown) => {
 	if (typeof v !== 'string') return v ?? null
@@ -122,14 +131,10 @@ app.post('/internal/turns', async (c) => {
 	return c.json({ ok: true })
 })
 
-/** Recent runs for the inspector list (Turso, with in-memory fallback). */
+/** Recent runs for the inspector list — optionally scoped via ?projectId. */
 app.get('/runs', async (c) => {
-	if (dbEnabled()) return c.json({ runs: await listRuns(50) })
-	return c.json({
-		runs: [...runs.values()]
-			.sort((a, b) => b.createdAt - a.createdAt)
-			.map((r) => ({ id: r.id, project_id: r.projectId, stage: r.stage, created_at: r.createdAt }))
-	})
+	const projectId = c.req.query('projectId') || undefined
+	return c.json({ runs: await listRuns(50, projectId) })
 })
 
 /** One run: live in-memory state if active, else the persisted row; always with archive (sessions + agent_turns). */
@@ -149,9 +154,73 @@ app.get('/runs/:id', async (c) => {
 	})
 })
 
+// ---- projects ---------------------------------------------------------------
+
+/** List projects (newest-updated first). */
+app.get('/projects', async (c) => c.json({ projects: await listProjects() }))
+
+/** Create a project. Body: { name, description?, audience?, tone?, topicMeta? }. */
+app.post('/projects', async (c) => {
+	const b = await c.req.json().catch(() => null)
+	const name = (b?.name ?? '').toString().trim()
+	if (!name) return c.json({ error: 'name required' }, 400)
+	const id = `proj_${randomUUID()}`
+	await createProject(id, {
+		name,
+		description: b.description,
+		audience: b.audience,
+		tone: b.tone,
+		topicMeta: b.topicMeta
+	})
+	return c.json({ id, ...(await getProject(id)) })
+})
+
+/** Fetch one project. */
+app.get('/projects/:id', async (c) => {
+	const p = await getProject(c.req.param('id'))
+	if (!p) return c.json({ error: 'not found' }, 404)
+	return c.json(p)
+})
+
+/** Patch a project (e.g. onboarding metadata). */
+app.patch('/projects/:id', async (c) => {
+	const id = c.req.param('id')
+	const b = await c.req.json().catch(() => null)
+	if (!b) return c.json({ error: 'invalid body' }, 400)
+	await updateProject(id, {
+		name: b.name,
+		description: b.description,
+		audience: b.audience,
+		tone: b.tone,
+		topicMeta: b.topicMeta
+	})
+	return c.json(await getProject(id))
+})
+
+// ---- config (the Settings surface) ------------------------------------------
+
+/** Redacted config + storage status for the Settings UI (never sends full keys). */
+app.get('/config', (c) =>
+	c.json({
+		keys: redactedConfig(),
+		storage: { mode: isCloud() ? 'cloud' : 'local', path: configPath() }
+	})
+)
+
+/** Write config keys to ~/.geostack/config. Empty value clears a key. */
+app.put('/config', async (c) => {
+	const b = await c.req.json().catch(() => null)
+	if (!b || typeof b !== 'object') return c.json({ error: 'invalid body' }, 400)
+	const values: Record<string, string> = {}
+	for (const k of CONFIG_KEYS) if (k in b) values[k] = String(b[k] ?? '')
+	writeConfig(values)
+	applyConfigToEnv() // pick up non-storage keys immediately (storage needs a restart)
+	return c.json({ ok: true, keys: redactedConfig() })
+})
+
 const port = Number(process.env.PORT ?? 8787)
 serve({ fetch: app.fetch, port }, (info) => {
 	console.log(`[conductor] listening on http://localhost:${info.port}`)
-	console.log(`[conductor] Turso archive: ${dbEnabled() ? 'enabled' : 'disabled (no creds)'}`)
+	console.log(`[conductor] storage: ${isCloud() ? 'Turso cloud' : 'local file (~/.geostack/geostack.db)'}`)
 	void initSchema()
 })

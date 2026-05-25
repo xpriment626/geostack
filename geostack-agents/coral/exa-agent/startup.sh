@@ -17,13 +17,15 @@ echo "Connection URL: ${CORAL_CONNECTION_URL:-?}"
 echo "Model:          ${MODEL_NAME:-?}"
 echo "Root:           $ROOT"
 
-# Load OPENROUTER_API_KEY (and optional EXA_API_KEY) for OpenRouter-direct calls.
-if [ -f "$ROOT/.env" ]; then
-	set -a
-	# shellcheck disable=SC1091
-	source "$ROOT/.env"
-	set +a
-fi
+# Load keys for OpenRouter-direct calls. The single local config
+# (~/.geostack/config, written by the app's Settings page) is the canonical
+# source; a repo-local .env still overrides it for development.
+set -a
+# shellcheck disable=SC1091
+[ -f "$HOME/.geostack/config" ] && source "$HOME/.geostack/config"
+# shellcheck disable=SC1091
+[ -f "$ROOT/.env" ] && source "$ROOT/.env"
+set +a
 
 cd "$ROOT"
 # One-time install convenience. To avoid a concurrent-install race on first

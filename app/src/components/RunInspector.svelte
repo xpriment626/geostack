@@ -2,7 +2,11 @@
   import { onMount, onDestroy } from 'svelte'
   import { marked } from 'marked'
 
-  let { onBack }: { onBack: () => void } = $props()
+  let {
+    onBack,
+    projectId,
+    embedded = false,
+  }: { onBack?: () => void; projectId?: string; embedded?: boolean } = $props()
 
   // ---- shapes (mirror the conductor's /runs + /runs/:id) -------------------
   interface RunListItem {
@@ -48,8 +52,9 @@
   let starting = $state(false)
   let loadError = $state<string | null>(null)
 
-  // new-run form (only works while the conductor + coral server are up)
-  let projectId = $state('agentic-memory')
+  // new-run form (only works while the conductor + coral server are up).
+  // When embedded in a project, projectId comes from the prop and the field is hidden.
+  let formProjectId = $state('agentic-memory')
   let anchorClaim = $state(
     'Durable agentic memory requires structural curation (dedup + reorganization), not merely larger context windows'
   )
@@ -75,7 +80,8 @@
 
   async function loadRuns() {
     try {
-      const { runs: list } = await api('/runs')
+      const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+      const { runs: list } = await api('/runs' + q)
       runs = list ?? []
       loadError = null
     } catch (e) {
@@ -114,7 +120,7 @@
     starting = true
     try {
       const intent = {
-        projectId,
+        projectId: projectId ?? formProjectId,
         anchorClaim,
         targetQuery,
         formatType: { mode, depth },
@@ -157,18 +163,22 @@
   })
 </script>
 
-<div class="inspector">
-  <header>
-    <button class="back" onclick={onBack}>← Back</button>
-    <h1>Geostack</h1>
-    <span class="sub">Run Inspector — GEO Content Fleet</span>
-  </header>
+<div class="inspector" class:embedded>
+  {#if !embedded}
+    <header>
+      <button class="back" onclick={() => onBack?.()}>← Back</button>
+      <h1>Geostack</h1>
+      <span class="sub">Run Inspector — GEO Content Fleet</span>
+    </header>
+  {/if}
 
   <div class="wrap">
     <aside class="left">
       <h2>New run</h2>
-      <label>Project ID</label>
-      <input bind:value={projectId} />
+      {#if !projectId}
+        <label>Project ID</label>
+        <input bind:value={formProjectId} />
+      {/if}
       <label>Anchor claim</label>
       <textarea bind:value={anchorClaim}></textarea>
       <label>Target query</label>
@@ -324,6 +334,10 @@
     grid-template-columns: 340px 1fr;
     height: calc(100vh - 51px);
   }
+  /* Embedded as a project's Runs tab — no standalone header; fit below the
+     app top bar + project header instead of claiming the whole viewport. */
+  .inspector.embedded { min-height: auto; }
+  .inspector.embedded .wrap { height: calc(100vh - 210px); min-height: 30rem; }
   .left { border-right: 1px solid #1d2025; overflow-y: auto; padding: 16px; }
   .right { overflow-y: auto; padding: 20px 24px; }
   h2 {

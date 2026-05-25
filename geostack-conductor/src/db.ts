@@ -1,42 +1,64 @@
 import { createClient, type Client } from '@libsql/client'
+import { homedir } from 'node:os'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { RunState } from './types.js'
 
 /**
- * Turso (libsql) archive layer — the run record + lifecycle/cost instrument.
+ * libsql store — projects + run archive + lifecycle/cost instrument.
  *
- * Split-by-kind per the design doc: Turso holds the immutable-ish run archive
- * (runs / agent_turns / sessions); Supabase will hold live app state later.
+ * Local-first: defaults to an embedded file at ~/.geostack/geostack.db (zero
+ * config). Set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) to point at Turso cloud
+ * instead — same client, same schema. One store holds everything; the conductor
+ * is the sole writer, so the embedded file has no concurrent-writer contention.
  *
- * ALL writes are best-effort and the whole layer no-ops when creds are absent,
- * so the conductor runs fine without Turso configured (and a DB hiccup never
- * breaks a run).
+ * Writes are best-effort; a DB hiccup never breaks a run.
  */
 
 let client: Client | null = null
 
+/** True when pointed at Turso cloud (vs the local embedded file). */
+export function isCloud(): boolean {
+	return !!process.env.TURSO_DATABASE_URL
+}
+
+/** Resolve the libsql URL: Turso cloud if configured, else a local file. */
+function dbUrl(): string {
+	if (process.env.TURSO_DATABASE_URL) return process.env.TURSO_DATABASE_URL
+	const dir = join(homedir(), '.geostack')
+	mkdirSync(dir, { recursive: true })
+	return `file:${join(dir, 'geostack.db')}`
+}
+
+/** Storage is always available now (local file by default), so this is always true. */
 export function dbEnabled(): boolean {
-	return !!(process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN)
+	return true
 }
 
 function getClient(): Client | null {
-	if (!dbEnabled()) return null
 	if (!client) {
-		client = createClient({
-			url: process.env.TURSO_DATABASE_URL!,
-			authToken: process.env.TURSO_AUTH_TOKEN!
-		})
+		const url = dbUrl()
+		const authToken = process.env.TURSO_AUTH_TOKEN // optional; ignored for file: URLs
+		client = createClient(authToken ? { url, authToken } : { url })
 	}
 	return client
 }
 
 export async function initSchema(): Promise<void> {
 	const c = getClient()
-	if (!c) {
-		console.log('[db] Turso not configured (no TURSO_DATABASE_URL/AUTH_TOKEN) — archive disabled.')
-		return
-	}
+	if (!c) return
 	await c.batch(
 		[
+			`CREATE TABLE IF NOT EXISTS projects (
+				id TEXT PRIMARY KEY,
+				name TEXT,
+				description TEXT,
+				audience TEXT,
+				tone TEXT,
+				topic_meta TEXT,
+				created_at INTEGER,
+				updated_at INTEGER
+			)`,
 			`CREATE TABLE IF NOT EXISTS runs (
 				id TEXT PRIMARY KEY,
 				project_id TEXT,
@@ -71,7 +93,89 @@ export async function initSchema(): Promise<void> {
 		],
 		'write'
 	)
-	console.log('[db] Turso archive ready (runs, agent_turns, sessions).')
+	console.log(
+		`[db] store ready (projects, runs, agent_turns, sessions) — ${isCloud() ? 'Turso cloud' : `local file ${join(homedir(), '.geostack', 'geostack.db')}`}`
+	)
+}
+
+// ---- projects ---------------------------------------------------------------
+
+export interface ProjectInput {
+	name: string
+	description?: string
+	audience?: string
+	tone?: string
+	topicMeta?: unknown
+}
+
+/** Create a project row. Returns the new id. */
+export async function createProject(id: string, p: ProjectInput): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	const now = Date.now()
+	try {
+		await c.execute({
+			sql: `INSERT INTO projects (id, name, description, audience, tone, topic_meta, created_at, updated_at)
+			      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: [
+				id,
+				p.name,
+				p.description ?? '',
+				p.audience ?? '',
+				p.tone ?? '',
+				p.topicMeta ? JSON.stringify(p.topicMeta) : null,
+				now,
+				now
+			]
+		})
+	} catch (err) {
+		console.warn(`[db] createProject failed: ${(err as Error).message}`)
+	}
+}
+
+/** Patch a subset of a project's columns. */
+export async function updateProject(id: string, p: Partial<ProjectInput>): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	const sets: string[] = []
+	const args: (string | number)[] = []
+	if (p.name !== undefined) (sets.push('name=?'), args.push(p.name))
+	if (p.description !== undefined) (sets.push('description=?'), args.push(p.description))
+	if (p.audience !== undefined) (sets.push('audience=?'), args.push(p.audience))
+	if (p.tone !== undefined) (sets.push('tone=?'), args.push(p.tone))
+	if (p.topicMeta !== undefined) (sets.push('topic_meta=?'), args.push(JSON.stringify(p.topicMeta)))
+	if (!sets.length) return
+	sets.push('updated_at=?')
+	args.push(Date.now(), id)
+	try {
+		await c.execute({ sql: `UPDATE projects SET ${sets.join(', ')} WHERE id=?`, args })
+	} catch (err) {
+		console.warn(`[db] updateProject failed: ${(err as Error).message}`)
+	}
+}
+
+export async function listProjects(): Promise<Row[]> {
+	const c = getClient()
+	if (!c) return []
+	try {
+		const r = await c.execute(`SELECT * FROM projects ORDER BY updated_at DESC`)
+		return r.rows as Row[]
+	} catch (err) {
+		console.warn(`[db] listProjects failed: ${(err as Error).message}`)
+		return []
+	}
+}
+
+export async function getProject(id: string): Promise<Row | null> {
+	const c = getClient()
+	if (!c) return null
+	try {
+		const r = await c.execute({ sql: `SELECT * FROM projects WHERE id=?`, args: [id] })
+		return (r.rows[0] as Row) ?? null
+	} catch (err) {
+		console.warn(`[db] getProject failed: ${(err as Error).message}`)
+		return null
+	}
 }
 
 /** Upsert the run row at each lifecycle transition. */
@@ -165,15 +269,20 @@ export async function getRunArchive(runId: string): Promise<{ sessions: Row[]; a
 	}
 }
 
-/** Recent runs, newest first — for the inspector's run list. */
-export async function listRuns(limit = 50): Promise<Row[]> {
+/** Recent runs, newest first — optionally scoped to one project. */
+export async function listRuns(limit = 50, projectId?: string): Promise<Row[]> {
 	const c = getClient()
 	if (!c) return []
 	try {
-		const r = await c.execute({
-			sql: `SELECT id, project_id, stage, error, created_at, updated_at FROM runs ORDER BY created_at DESC LIMIT ?`,
-			args: [limit]
-		})
+		const r = projectId
+			? await c.execute({
+					sql: `SELECT id, project_id, stage, error, created_at, updated_at FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?`,
+					args: [projectId, limit]
+				})
+			: await c.execute({
+					sql: `SELECT id, project_id, stage, error, created_at, updated_at FROM runs ORDER BY created_at DESC LIMIT ?`,
+					args: [limit]
+				})
 		return r.rows as Row[]
 	} catch (err) {
 		console.warn(`[db] listRuns failed: ${(err as Error).message}`)
