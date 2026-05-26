@@ -1,4 +1,5 @@
 import { MCPClient } from '@mastra/mcp'
+import { withRetry } from './retry.js'
 
 /**
  * DeepWiki hosted MCP — public, no key. Surfaces implementation-level detail
@@ -19,5 +20,5 @@ export const deepwikiMcpClient = new MCPClient({
 })
 
 export async function getDeepwikiTools() {
-	return await deepwikiMcpClient.listTools()
+	return await withRetry(() => deepwikiMcpClient.listTools(), { label: 'deepwiki' })
 }

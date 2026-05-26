@@ -112,23 +112,22 @@ export interface RunHooks {
 	onSession?: (e: { stage: 'research' | 'synthesis'; sessionId: string; phase: 'open' | 'closed' }) => void
 }
 
-export async function runProduction(run: RunState, hooks: RunHooks): Promise<void> {
+/**
+ * One research fan-out attempt: own session, ready-gate, seed, poll, collapse.
+ * Throws on any failure — including a ZERO-SOURCE result (almost always a
+ * connector/tool-load failure), so the caller can retry or fail loud rather than
+ * synthesize an ungrounded draft. Always closes its session.
+ */
+async function researchFanout(
+	run: RunState,
+	intent: IntentArtifact,
+	hooks: RunHooks,
+	attempt: number
+): Promise<ResearchArtifact> {
 	const { log } = hooks
-	const save = () => hooks.persist?.(run)
-	if (!run.intent) {
-		run.stage = 'failed'
-		run.error = 'no intent artifact'
-		save()
-		return
-	}
-	const intent = run.intent
-
-	// ---------- Session A: research fan-out ----------
 	let sessionA: SessionIdentifier | null = null
 	try {
-		run.stage = 'research'
-		save()
-		log(`[${run.id}] research: creating session A (${cfg.RESEARCH_AGENTS.join(', ')})`)
+		log(`[${run.id}] research (attempt ${attempt}/${cfg.RESEARCH_ATTEMPTS}): creating session A (${cfg.RESEARCH_AGENTS.join(', ')})`)
 		sessionA = await createSession(sessionRequest(cfg.RESEARCH_AGENTS))
 		hooks.onSession?.({ stage: 'research', sessionId: sessionA.sessionId, phase: 'open' })
 
@@ -165,21 +164,60 @@ export async function runProduction(run: RunState, hooks: RunHooks): Promise<voi
 		)
 		if (!results) throw new Error('research fan-out did not converge before timeout')
 
-		run.research = bundleResearchArtifact(intent, results) // STRUCTURAL collapse, no LLM
-		save()
-		log(`[${run.id}] research: collapsed ${Object.keys(results).join('+')} → research artifact`)
-	} catch (err) {
-		run.stage = 'failed'
-		run.error = `research stage: ${(err as Error).message}`
-		save()
-		log(`[${run.id}] ${run.error}`)
-		return
+		// Fail loud on a fully-empty fan-out (no grounding ⇒ almost always a
+		// connector/tool-load failure). Thrown so the caller can retry / fail.
+		const totalSources = Object.values(results).reduce((n, ev) => n + (ev?.sources?.length ?? 0), 0)
+		if (totalSources === 0) {
+			const sources = cfg.RESEARCH_AGENTS.map((a) => a.replace('-agent', '')).join(' + ')
+			throw new Error(`no research sources returned (${sources} both empty) — likely a connector/tool-load failure`)
+		}
+
+		log(`[${run.id}] research: collapsed ${Object.keys(results).join('+')} → ${totalSources} sources`)
+		return bundleResearchArtifact(intent, results) // STRUCTURAL collapse, no LLM
 	} finally {
 		if (sessionA) {
 			await closeSession(sessionA)
 			hooks.onSession?.({ stage: 'research', sessionId: sessionA.sessionId, phase: 'closed' })
 			log(`[${run.id}] research: session A closed`)
 		}
+	}
+}
+
+export async function runProduction(run: RunState, hooks: RunHooks): Promise<void> {
+	const { log } = hooks
+	const save = () => hooks.persist?.(run)
+	if (!run.intent) {
+		run.stage = 'failed'
+		run.error = 'no intent artifact'
+		save()
+		return
+	}
+	const intent = run.intent
+
+	// ---------- Session A: research fan-out (retried, then fail loud) ----------
+	run.stage = 'research'
+	save()
+	try {
+		let lastErr: unknown
+		for (let attempt = 1; attempt <= cfg.RESEARCH_ATTEMPTS; attempt++) {
+			try {
+				run.research = await researchFanout(run, intent, hooks, attempt)
+				lastErr = undefined
+				break
+			} catch (err) {
+				lastErr = err
+				log(`[${run.id}] research attempt ${attempt}/${cfg.RESEARCH_ATTEMPTS} failed: ${(err as Error).message}`)
+				if (attempt < cfg.RESEARCH_ATTEMPTS) log(`[${run.id}] retrying research fan-out…`)
+			}
+		}
+		if (lastErr) throw lastErr // exhausted attempts → fail loud
+		save()
+	} catch (err) {
+		run.stage = 'failed'
+		run.error = `research stage: ${(err as Error).message}`
+		save()
+		log(`[${run.id}] ${run.error}`)
+		return
 	}
 
 	// ---------- Session B: synthesis ----------

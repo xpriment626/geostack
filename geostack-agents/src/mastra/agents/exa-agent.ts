@@ -2,12 +2,14 @@ import { Agent } from '@mastra/core/agent'
 import { buildModel } from '../model.js'
 import { getCoralAgentTools } from '../mcp/coral-mcp-client.js'
 import { getExaTools } from '../mcp/exa-mcp-client.js'
+import { capToolResults } from '../mcp/tool-result-cap.js'
 
 export async function makeExaAgent(): Promise<Agent> {
 	const coralTools = await getCoralAgentTools()
 	let exaTools: Awaited<ReturnType<typeof getExaTools>> | null = null
 	try {
 		exaTools = await getExaTools()
+		capToolResults(exaTools) // bound oversized search/content results re-fed as input
 	} catch (err) {
 		console.error(`[exa-agent] Exa MCP unavailable, coral-only: ${(err as Error).message}`)
 	}

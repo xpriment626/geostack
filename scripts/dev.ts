@@ -13,13 +13,18 @@
  * Ctrl-C tears the entire process tree down cleanly (each child runs in its
  * own process group; we signal the group, then sweep the known ports).
  *
- * Config lives in (consolidating to one file is a follow-up):
- *   - geostack-agents/.env      OPENROUTER_API_KEY (+ optional EXA_API_KEY)
- *   - geostack-conductor/.env   TURSO_* (optional — archive no-ops without it)
- *   - .env (this dir)           VITE_* for the app
+ * Config:
+ *   - ~/.geostack/config        the single source of truth — keys + storage,
+ *                               set via the app's Settings page. The conductor
+ *                               reads it; storage defaults to the local file
+ *                               (~/.geostack/geostack.db), Turso is opt-in here.
+ *   - geostack-agents/.env      dev-only override for the agents (OPENROUTER_API_KEY
+ *                               + optional EXA_API_KEY); their startup.sh sources
+ *                               ~/.geostack/config first.
+ *   - .env (this dir)           VITE_* for the app (build-time).
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -121,10 +126,24 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 log('launcher', 'Geostack — local stack starting. Ctrl-C stops everything.')
 ensureLinked()
 
+// Dev convenience: the conductor's intent-capture chat calls OpenRouter
+// directly, so it needs OPENROUTER_API_KEY. ~/.geostack/config is canonical;
+// in dev we pass the agents' key through so a clone with a filled
+// geostack-agents/.env "just works" without re-entering it in Settings.
+function devOpenRouterKey(): Record<string, string> {
+  const f = join(AGENTS_DIR, '.env')
+  if (process.env.OPENROUTER_API_KEY || !existsSync(f)) return {}
+  for (const line of readFileSync(f, 'utf-8').split('\n')) {
+    const m = line.match(/^\s*OPENROUTER_API_KEY\s*=\s*(.*?)\s*$/)
+    if (m) return { OPENROUTER_API_KEY: m[1].replace(/^["']|["']$/g, '') }
+  }
+  return {}
+}
+
 // coral-server first (slowest, JVM); conductor + app tolerate it not being
 // ready yet (they only need it once you start a run).
 start('coral', 'npx', ['-y', CORAL_VERSION, 'server', 'start', '--', `--auth.keys=${AUTH_KEY}`])
-start('conductor', 'npm', ['start'], { PORT: '8787' }, CONDUCTOR_DIR)
+start('conductor', 'npm', ['start'], { PORT: '8787', ...devOpenRouterKey() }, CONDUCTOR_DIR)
 start('app', 'npm', ['run', 'dev'], {}, APP_DIR)
 
 log('launcher', `${C.dim}UI → http://localhost:5174   API → http://localhost:8787   coral → http://localhost:5555${C.reset}`)

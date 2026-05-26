@@ -154,6 +154,61 @@ export async function updateProject(id: string, p: Partial<ProjectInput>): Promi
 	}
 }
 
+/** Delete a project and everything under it (its runs + their turns + sessions). */
+export async function deleteProject(id: string): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	try {
+		await c.batch(
+			[
+				{ sql: `DELETE FROM agent_turns WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)`, args: [id] },
+				{ sql: `DELETE FROM sessions WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)`, args: [id] },
+				{ sql: `DELETE FROM runs WHERE project_id = ?`, args: [id] },
+				{ sql: `DELETE FROM projects WHERE id = ?`, args: [id] }
+			],
+			'write'
+		)
+	} catch (err) {
+		console.warn(`[db] deleteProject failed: ${(err as Error).message}`)
+	}
+}
+
+/** Delete one run and its archive rows (agent_turns + sessions). */
+export async function deleteRun(runId: string): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	try {
+		await c.batch(
+			[
+				{ sql: `DELETE FROM agent_turns WHERE run_id = ?`, args: [runId] },
+				{ sql: `DELETE FROM sessions WHERE run_id = ?`, args: [runId] },
+				{ sql: `DELETE FROM runs WHERE id = ?`, args: [runId] }
+			],
+			'write'
+		)
+	} catch (err) {
+		console.warn(`[db] deleteRun failed: ${(err as Error).message}`)
+	}
+}
+
+/** Delete all runs (and their archive rows) for a project, keeping the project. */
+export async function deleteProjectRuns(projectId: string): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	try {
+		await c.batch(
+			[
+				{ sql: `DELETE FROM agent_turns WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)`, args: [projectId] },
+				{ sql: `DELETE FROM sessions WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)`, args: [projectId] },
+				{ sql: `DELETE FROM runs WHERE project_id = ?`, args: [projectId] }
+			],
+			'write'
+		)
+	} catch (err) {
+		console.warn(`[db] deleteProjectRuns failed: ${(err as Error).message}`)
+	}
+}
+
 export async function listProjects(): Promise<Row[]> {
 	const c = getClient()
 	if (!c) return []

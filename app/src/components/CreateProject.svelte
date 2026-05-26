@@ -16,8 +16,8 @@
     error = null
     try {
       const p = await createProject({ name: name.trim(), description: description.trim() })
-      // Straight into onboarding to capture topic metadata.
-      navigate({ name: 'onboarding', projectId: p.id })
+      // Straight into the intent-capture interview to fill the topic model.
+      navigate({ name: 'intent', projectId: p.id })
     } catch (e) {
       error = (e as Error).message
       saving = false

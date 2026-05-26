@@ -1,14 +1,9 @@
-// Load geostack-conductor/.env (dev convenience) if present — no dep needed.
-try {
-	process.loadEnvFile()
-} catch {
-	/* no .env — fine; vars may come from the environment */
-}
-
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
+import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { IntentArtifact, type RunState } from './types.js'
+import { chat, type ChatMessage } from './llm.js'
 import { runProduction } from './orchestrator.js'
 import {
 	isCloud,
@@ -22,12 +17,18 @@ import {
 	createProject,
 	updateProject,
 	listProjects,
-	getProject
+	getProject,
+	deleteProject,
+	deleteRun,
+	deleteProjectRuns
 } from './db.js'
 import { applyConfigToEnv, readConfig, writeConfig, redactedConfig, configPath, CONFIG_KEYS } from './local-config.js'
 
-// The single local config (~/.geostack/config) is the source of truth for keys
-// + storage; load it before anything reads process.env. Set via the Settings UI.
+// ~/.geostack/config is the single source of truth for keys + storage (set via
+// the Settings UI). This is the only config load — there is no committed repo
+// .env auto-load, so the local-file store is the default and Turso is opt-in.
+// A genuine shell env var still wins (applyConfigToEnv only fills what's unset),
+// which keeps a dev override possible. Runs before anything reads process.env.
 applyConfigToEnv()
 
 const safeJson = (v: unknown) => {
@@ -36,6 +37,55 @@ const safeJson = (v: unknown) => {
 		return JSON.parse(v)
 	} catch {
 		return v
+	}
+}
+
+// ---- intent capture (conductor-side chat interview) -------------------------
+
+/** The topic model the interview captures — proposed by the LLM, confirmed by the user. */
+const IntentProposal = z.object({
+	description: z.string().optional().default(''),
+	audience: z.string().optional().default(''),
+	tone: z.string().optional().default(''),
+	targetQueries: z.array(z.string()).default([]),
+	anchorClaims: z.array(z.string()).default([])
+})
+type IntentProposal = z.infer<typeof IntentProposal>
+
+/** The interviewer persona + the capture contract (a fenced JSON proposal when ready). */
+function buildIntentSystemPrompt(name: string, description: string): string {
+	const seed = description ? ` The user's one-line description: "${description}".` : ''
+	return [
+		'You are the intake interviewer for Geostack, a tool that helps people win citations in AI answer engines (GEO — generative engine optimization).',
+		'A "project" is one topic the user wants AI assistants to cite THEM on. Through a short, natural conversation you capture the project\'s topic model so the downstream content fleet knows what to research and what positioning to anchor every article on.',
+		'',
+		`The project is "${name}".${seed}`,
+		'',
+		'You are capturing five things:',
+		'- description: a one-to-two sentence positioning statement — the angle they want to own.',
+		'- audience: who the content is written for.',
+		'- tone: the voice of the content.',
+		'- targetQueries: the questions/searches they want AI engines to cite them on (aim for 3–6).',
+		'- anchorClaims: the differentiated claims / point of view they are building authority on (aim for 2–4).',
+		'',
+		'Conversation rules:',
+		'- Open with ONE short sentence of context, then ask your FIRST question. Ask one — at most two — questions per turn. Keep it concrete; offer an example when a question is abstract.',
+		'- Build on their answers and infer what you reasonably can; do not interrogate every field one by one.',
+		'- Do NOT dump all questions at once. Do NOT output JSON until you are confident you can fill all five fields well (usually after 2–4 exchanges).',
+		'- When you have enough, STOP asking questions and output your proposal as a SINGLE fenced ```json code block with EXACTLY these keys: description (string), audience (string), tone (string), targetQueries (array of strings), anchorClaims (array of strings).',
+		'- Put one short sentence before the block (e.g. "Here\'s what I\'ve captured — confirm or tell me what to change:") and write nothing after the block.'
+	].join('\n')
+}
+
+/** Pull a fenced JSON proposal out of an assistant reply, if present. */
+function extractProposal(text: string): { proposal: IntentProposal | null; display: string } {
+	const m = text.match(/```json\s*([\s\S]*?)```/i)
+	if (!m) return { proposal: null, display: text }
+	try {
+		const proposal = IntentProposal.parse(JSON.parse(m[1].trim()))
+		return { proposal, display: text.replace(m[0], '').trim() }
+	} catch {
+		return { proposal: null, display: text }
 	}
 }
 
@@ -58,6 +108,21 @@ const runs = new Map<string, RunState>()
 // Maps a Coral session id → its run + stage, so agents can report per-turn cost
 // keyed only by their CORAL_SESSION_ID (which they already have in env).
 const sessionIndex = new Map<string, { runId: string; stage: string }>()
+
+// A run is "active" while its in-memory state is pre-terminal — deleting it then
+// would race the orchestrator (which re-upserts the row on its next persist()).
+const TERMINAL_STAGES = new Set(['done', 'failed'])
+const runActive = (id: string) => {
+	const r = runs.get(id)
+	return !!r && !TERMINAL_STAGES.has(r.stage)
+}
+const projectHasActiveRun = (projectId: string) => {
+	for (const r of runs.values()) if (r.projectId === projectId && !TERMINAL_STAGES.has(r.stage)) return true
+	return false
+}
+const forgetProjectRuns = (projectId: string) => {
+	for (const [id, r] of runs) if (r.projectId === projectId) runs.delete(id)
+}
 
 app.get('/health', (c) => c.json({ ok: true, service: 'geostack-conductor' }))
 
@@ -154,6 +219,15 @@ app.get('/runs/:id', async (c) => {
 	})
 })
 
+/** Delete one run + its archive (turns, sessions). Blocked while the run is live. */
+app.delete('/runs/:id', async (c) => {
+	const id = c.req.param('id')
+	if (runActive(id)) return c.json({ error: 'run in progress — wait for it to finish, then delete' }, 409)
+	await deleteRun(id)
+	runs.delete(id)
+	return c.json({ ok: true })
+})
+
 // ---- projects ---------------------------------------------------------------
 
 /** List projects (newest-updated first). */
@@ -195,6 +269,64 @@ app.patch('/projects/:id', async (c) => {
 		topicMeta: b.topicMeta
 	})
 	return c.json(await getProject(id))
+})
+
+/** Delete a project and everything under it (its runs + archive). Blocked if a run is live. */
+app.delete('/projects/:id', async (c) => {
+	const id = c.req.param('id')
+	if (projectHasActiveRun(id)) return c.json({ error: 'a run for this project is in progress' }, 409)
+	await deleteProject(id)
+	forgetProjectRuns(id)
+	return c.json({ ok: true })
+})
+
+/** Clear all runs for a project (keeps the project). Blocked if a run is live. */
+app.delete('/projects/:id/runs', async (c) => {
+	const id = c.req.param('id')
+	if (projectHasActiveRun(id)) return c.json({ error: 'a run for this project is in progress' }, 409)
+	await deleteProjectRuns(id)
+	forgetProjectRuns(id)
+	return c.json({ ok: true })
+})
+
+/**
+ * Intent-capture chat. The conductor runs a 1:1 interview directly against
+ * OpenRouter (deepseek-v4-pro) — no Coral session needed for a single-agent
+ * conversation. Body: { messages: [{role,content}] } (user/assistant history,
+ * no system). Returns { reply, proposal, usage, model }; `proposal` is non-null
+ * once the model has enough to fill the topic model, and the frontend then
+ * confirms it and PATCHes the project.
+ */
+app.post('/projects/:id/intent/chat', async (c) => {
+	const id = c.req.param('id')
+	const project = await getProject(id)
+	if (!project) return c.json({ error: 'not found' }, 404)
+	const b = await c.req.json().catch(() => null)
+	const history: ChatMessage[] = Array.isArray(b?.messages)
+		? b.messages
+				.filter(
+					(m: unknown): m is ChatMessage =>
+						!!m &&
+						typeof m === 'object' &&
+						((m as ChatMessage).role === 'user' || (m as ChatMessage).role === 'assistant') &&
+						typeof (m as ChatMessage).content === 'string'
+				)
+				.map((m: ChatMessage) => ({ role: m.role, content: m.content }))
+		: []
+	const system = buildIntentSystemPrompt(String(project.name ?? ''), String(project.description ?? ''))
+	// First touch: with no history the model would only see the system prompt and
+	// often returns nothing, so the UI looked dead until the user typed. Inject a
+	// kickoff user turn so the interview opens itself with the first question.
+	const seed: ChatMessage[] = history.length
+		? history
+		: [{ role: 'user', content: 'Begin the interview now — greet me in one short sentence and ask your first question.' }]
+	try {
+		const res = await chat([{ role: 'system', content: system }, ...seed])
+		const { proposal, display } = extractProposal(res.content)
+		return c.json({ reply: display, proposal, usage: res.usage, model: res.model })
+	} catch (e) {
+		return c.json({ error: (e as Error).message }, 502)
+	}
 })
 
 // ---- config (the Settings surface) ------------------------------------------

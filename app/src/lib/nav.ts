@@ -4,6 +4,7 @@
 export type Route =
   | { name: 'projects' }
   | { name: 'create' }
+  | { name: 'intent'; projectId: string }
   | { name: 'onboarding'; projectId: string }
   | { name: 'project'; projectId: string }
   | { name: 'settings' }

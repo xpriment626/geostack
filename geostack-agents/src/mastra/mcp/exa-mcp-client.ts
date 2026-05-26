@@ -1,4 +1,5 @@
 import { MCPClient } from '@mastra/mcp'
+import { withRetry } from './retry.js'
 
 /**
  * Exa hosted MCP. Free tier: 3 QPS / 150 calls per day, no key required.
@@ -21,5 +22,5 @@ export const exaMcpClient = new MCPClient({
 })
 
 export async function getExaTools() {
-	return await exaMcpClient.listTools()
+	return await withRetry(() => exaMcpClient.listTools(), { label: 'exa' })
 }

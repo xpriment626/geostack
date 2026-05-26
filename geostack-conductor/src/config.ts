@@ -15,6 +15,11 @@ export const RESEARCH_AGENTS = ['exa-agent', 'deepwiki-agent'] as const
 // Synthesis session B.
 export const SYNTHESIS_AGENTS = ['geo-agent', 'verify-agent', 'style-agent'] as const
 
+// How many times to attempt the research fan-out. A fresh session re-spawns the
+// agents (new MCP tool-load), so a retry recovers from a transient connector
+// failure that left a stage with zero sources. >1 ⇒ retry before failing loud.
+export const RESEARCH_ATTEMPTS = Number(process.env.GEOSTACK_RESEARCH_ATTEMPTS ?? 2)
+
 // TTL backstop so a stuck session can't linger forever (ms).
 export const SESSION_TTL_MS = Number(process.env.GEOSTACK_SESSION_TTL_MS ?? 1_800_000)
 

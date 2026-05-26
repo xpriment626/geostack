@@ -37,6 +37,35 @@ export const createProject = (body: Partial<Project>) =>
   api<Project>('/projects', { method: 'POST', body: JSON.stringify(body) })
 export const updateProject = (id: string, body: Partial<Project> & { topicMeta?: unknown }) =>
   api<Project>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+export const deleteProject = (id: string) =>
+  api<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' })
+export const clearProjectRuns = (id: string) =>
+  api<{ ok: boolean }>(`/projects/${id}/runs`, { method: 'DELETE' })
+
+// ---- intent capture ---------------------------------------------------------
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+export interface IntentProposal {
+  description: string
+  audience: string
+  tone: string
+  targetQueries: string[]
+  anchorClaims: string[]
+}
+export interface IntentChatReply {
+  reply: string
+  proposal: IntentProposal | null
+  usage: { inputTokens: number; outputTokens: number }
+  model: string
+}
+export const intentChat = (projectId: string, messages: ChatMessage[]) =>
+  api<IntentChatReply>(`/projects/${projectId}/intent/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ messages }),
+  })
 
 export const getConfig = () => api<ConfigStatus>('/config')
 export const putConfig = (body: Record<string, string>) =>

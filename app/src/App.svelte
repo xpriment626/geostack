@@ -1,6 +1,7 @@
 <script lang="ts">
   import Projects from './components/Projects.svelte'
   import CreateProject from './components/CreateProject.svelte'
+  import IntentChat from './components/IntentChat.svelte'
   import Onboarding from './components/Onboarding.svelte'
   import Project from './components/Project.svelte'
   import Settings from './components/Settings.svelte'
@@ -18,7 +19,7 @@
     <nav>
       <button
         class="navlink"
-        class:active={route.name === 'projects' || route.name === 'create' || route.name === 'project' || route.name === 'onboarding'}
+        class:active={route.name === 'projects' || route.name === 'create' || route.name === 'project' || route.name === 'onboarding' || route.name === 'intent'}
         onclick={() => navigate({ name: 'projects' })}>Projects</button>
       <button class="navlink" class:active={route.name === 'settings'} onclick={() => navigate({ name: 'settings' })}>
         Settings
@@ -31,6 +32,8 @@
       <Projects {navigate} />
     {:else if route.name === 'create'}
       <CreateProject {navigate} />
+    {:else if route.name === 'intent'}
+      <IntentChat projectId={route.projectId} {navigate} />
     {:else if route.name === 'onboarding'}
       <Onboarding projectId={route.projectId} {navigate} />
     {:else if route.name === 'project'}

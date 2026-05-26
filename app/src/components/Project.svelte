@@ -1,15 +1,30 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { Navigate } from '../lib/nav'
-  import { getProject, type Project } from '../lib/api'
+  import { getProject, deleteProject, type Project } from '../lib/api'
   import RunInspector from './RunInspector.svelte'
 
   let { projectId, navigate }: { projectId: string; navigate: Navigate } = $props()
+  let deleting = $state(false)
+
+  async function delProject() {
+    if (!project) return
+    if (!confirm(`Delete "${project.name}" and all its runs? This can't be undone.`)) return
+    deleting = true
+    try {
+      await deleteProject(projectId)
+      navigate({ name: 'projects' })
+    } catch (e) {
+      alert('Delete failed: ' + (e as Error).message)
+      deleting = false
+    }
+  }
 
   type Tab = 'overview' | 'ideation' | 'runs'
   let tab = $state<Tab>('overview')
   let project = $state<Project | null>(null)
   let error = $state<string | null>(null)
+  let runSeed = $state<{ anchorClaim?: string; targetQuery?: string } | null>(null)
 
   let meta = $derived.by(() => {
     if (!project?.topic_meta) return { targetQueries: [] as string[], anchorClaims: [] as string[] }
@@ -20,6 +35,40 @@
       return { targetQueries: [], anchorClaims: [] }
     }
   })
+
+  // Turn a search query into a declarative working headline.
+  function headline(q: string): string {
+    const t = q.trim().replace(/^(how|what|why|when|where|which|who|is|are|should|can|do|does)\s+/i, '')
+    return t.charAt(0).toUpperCase() + t.slice(1)
+  }
+
+  // First-pass ideas: one card per target query, paired with a rotating anchor
+  // claim as its angle. (Daily GEO research will feed this later.)
+  type Idea = { id: string; title: string; targetQuery: string; anchorClaim: string }
+  let ideas = $derived.by<Idea[]>(() => {
+    const qs = meta.targetQueries as string[]
+    const cls = meta.anchorClaims as string[]
+    if (qs.length) {
+      return qs.map((q, i) => ({
+        id: 'q' + i,
+        title: headline(q),
+        targetQuery: q,
+        anchorClaim: cls.length ? cls[i % cls.length] : '',
+      }))
+    }
+    // No queries captured yet — fall back to claim-driven ideas.
+    return cls.map((cl, i) => ({
+      id: 'c' + i,
+      title: cl.length > 64 ? cl.slice(0, 64) + '…' : cl,
+      targetQuery: '',
+      anchorClaim: cl,
+    }))
+  })
+
+  function curate(idea: Idea) {
+    runSeed = { anchorClaim: idea.anchorClaim, targetQuery: idea.targetQuery }
+    tab = 'runs'
+  }
 
   onMount(async () => {
     try {
@@ -32,7 +81,14 @@
 
 <div class="projhead">
   <div class="page hpad">
-    <button class="btn btn-ghost back" onclick={() => navigate({ name: 'projects' })}>← Projects</button>
+    <div class="toprow">
+      <button class="btn btn-ghost back" onclick={() => navigate({ name: 'projects' })}>← Projects</button>
+      {#if project}
+        <button class="btn btn-ghost danger" onclick={delProject} disabled={deleting}>
+          {deleting ? 'Deleting…' : 'Delete project'}
+        </button>
+      {/if}
+    </div>
     {#if error}
       <p class="err">Couldn't load project ({error}).</p>
     {:else}
@@ -76,21 +132,59 @@
   </div>
 {:else if tab === 'ideation'}
   <div class="page">
-    <div class="card placeholder">
-      <div class="ph-mark">✦</div>
-      <h2>Ideation board</h2>
-      <p class="muted">Where daily GEO research surfaces article ideas to curate into runs. Coming next.</p>
-    </div>
+    {#if ideas.length}
+      <div class="idea-intro">
+        <p class="muted">
+          Article ideas seeded from this project's target queries and anchor claims.
+          Curate one into a run to draft it.
+        </p>
+      </div>
+      <div class="ideas">
+        {#each ideas as idea (idea.id)}
+          <div class="card idea">
+            <h3>{idea.title}</h3>
+            {#if idea.targetQuery}
+              <div class="idea-row">
+                <span class="idea-tag">ranks for</span>
+                <span class="idea-val">{idea.targetQuery}</span>
+              </div>
+            {/if}
+            {#if idea.anchorClaim}
+              <div class="idea-row">
+                <span class="idea-tag">angle</span>
+                <span class="idea-val">{idea.anchorClaim}</span>
+              </div>
+            {/if}
+            <button class="btn btn-primary curate" onclick={() => curate(idea)}>
+              Curate into run →
+            </button>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="card placeholder">
+        <div class="ph-mark">✦</div>
+        <h2>No ideas yet</h2>
+        <p class="muted">
+          Ideas are seeded from your target queries and anchor claims.
+          <button class="linkish" onclick={() => navigate({ name: 'onboarding', projectId })}>Add some in setup</button>
+          to populate this board.
+        </p>
+      </div>
+    {/if}
   </div>
 {:else}
   <!-- Production / Runs — the run inspector, scoped to this project. -->
-  <RunInspector {projectId} embedded />
+  <RunInspector {projectId} embedded seed={runSeed} />
 {/if}
 
 <style>
   .projhead { border-bottom: 1px solid var(--border); background: var(--surface); }
   .hpad { padding-top: 1.5rem; padding-bottom: 0; }
-  .back { margin-bottom: 0.8rem; padding-left: 0; }
+  .toprow { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
+  .back { padding-left: 0; }
+  .danger { color: #b91c1c; }
+  .danger:hover { color: #b91c1c; border-color: #fca5a5; }
   h1 { font-size: 1.6rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
   .desc { margin: 0 0 0.8rem; font-size: 0.95rem; }
   .err { color: #b91c1c; }
@@ -122,4 +216,13 @@
   .ph-mark { font-size: 1.8rem; color: var(--accent); opacity: 0.5; }
   .placeholder h2 { margin: 0; font-size: 1.15rem; }
   .placeholder p { margin: 0; max-width: 26rem; }
+  .idea-intro { margin-bottom: 1rem; }
+  .idea-intro p { margin: 0; max-width: 44rem; font-size: 0.92rem; }
+  .ideas { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 1rem; }
+  .idea { padding: 1.2rem 1.3rem; display: flex; flex-direction: column; gap: 0.7rem; }
+  .idea h3 { margin: 0; font-size: 1.05rem; line-height: 1.3; letter-spacing: -0.01em; }
+  .idea-row { display: flex; flex-direction: column; gap: 0.15rem; }
+  .idea-tag { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+  .idea-val { font-size: 0.9rem; color: var(--muted); }
+  .curate { margin-top: auto; align-self: flex-start; }
 </style>

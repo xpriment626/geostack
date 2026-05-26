@@ -7,7 +7,13 @@
     onBack,
     projectId,
     embedded = false,
-  }: { onBack?: () => void; projectId?: string; embedded?: boolean } = $props()
+    seed = null,
+  }: {
+    onBack?: () => void
+    projectId?: string
+    embedded?: boolean
+    seed?: { anchorClaim?: string; targetQuery?: string } | null
+  } = $props()
 
   // ---- shapes (mirror the conductor's /runs + /runs/:id) -------------------
   interface RunListItem {
@@ -33,6 +39,8 @@
   }
   interface GroundingItem { status: string; claim: string; reason?: string }
   interface RunOutput { markdown?: string; grounding?: GroundingItem[] }
+  interface ResearchSourceResult { source?: string; sources?: unknown[]; notes?: string }
+  interface ResearchArtifact { results?: Record<string, ResearchSourceResult | undefined> }
   interface RunDetail {
     id: string
     stage: string
@@ -41,6 +49,7 @@
     error?: string
     sessions?: SessionRow[]
     agentTurns?: AgentTurn[]
+    research?: ResearchArtifact | null
     output?: RunOutput | null
   }
 
@@ -147,6 +156,36 @@
     starting = false
   }
 
+  // One-click delete for fast throwaway pruning (no confirm — runs are cheap).
+  async function delRun(e: Event, id: string) {
+    e.stopPropagation()
+    try {
+      await api('/runs/' + id, { method: 'DELETE' })
+      runs = runs.filter((r) => r.id !== id)
+      if (selectedId === id) {
+        selectedId = null
+        detail = null
+        stopDetailPoll()
+      }
+    } catch (err) {
+      alert('Delete failed: ' + (err as Error).message)
+    }
+  }
+
+  // Clear every run for this project (confirmed — bigger blast radius).
+  async function clearRuns() {
+    if (!projectId || !confirm('Delete ALL runs for this project? This can’t be undone.')) return
+    try {
+      await api('/projects/' + projectId + '/runs', { method: 'DELETE' })
+      runs = []
+      selectedId = null
+      detail = null
+      stopDetailPoll()
+    } catch (err) {
+      alert('Clear failed: ' + (err as Error).message)
+    }
+  }
+
   function reached(stage: string, step: string) {
     if (stage === 'failed') return STAGES.indexOf(step) <= STAGES.indexOf('research')
     return STAGES.indexOf(step) <= STAGES.indexOf(stage)
@@ -158,6 +197,13 @@
   let outputHtml = $derived(
     detail?.output?.markdown ? (marked.parse(detail.output.markdown) as string) : ''
   )
+  let researchRows = $derived.by(() => {
+    const r = detail?.research?.results
+    if (!r) return [] as { source: string; count: number; notes: string }[]
+    return Object.entries(r)
+      .filter(([, v]) => v)
+      .map(([key, v]) => ({ source: v?.source ?? key, count: v?.sources?.length ?? 0, notes: v?.notes ?? '' }))
+  })
 
   async function prefillFromProject() {
     if (!projectId) return
@@ -168,12 +214,21 @@
       const meta = p.topic_meta ? JSON.parse(p.topic_meta) : {}
       projectClaims = Array.isArray(meta.anchorClaims) ? meta.anchorClaims : []
       projectQueries = Array.isArray(meta.targetQueries) ? meta.targetQueries : []
-      if (projectClaims.length) anchorClaim = projectClaims[0]
-      if (projectQueries.length) targetQuery = projectQueries[0]
+      // A curated idea (seed) takes precedence over the project's first entry.
+      if (projectClaims.length) anchorClaim = seed?.anchorClaim || projectClaims[0]
+      if (projectQueries.length) targetQuery = seed?.targetQuery || projectQueries[0]
+      if (seed?.anchorClaim) anchorClaim = seed.anchorClaim
+      if (seed?.targetQuery) targetQuery = seed.targetQuery
     } catch {
       /* keep defaults */
     }
   }
+
+  // Apply a curated idea seeded from the Ideation tab.
+  $effect(() => {
+    if (seed?.anchorClaim) anchorClaim = seed.anchorClaim
+    if (seed?.targetQuery) targetQuery = seed.targetQuery
+  })
 
   onMount(() => {
     void loadRuns()
@@ -235,7 +290,13 @@
       </button>
 
       <h2 class="runs-head">
-        Recent runs <button class="secondary" onclick={loadRuns}>↻</button>
+        <span>Recent runs</span>
+        <span class="rh-actions">
+          {#if projectId && runs.length}
+            <button class="secondary" onclick={clearRuns} title="Delete all runs for this project">Clear all</button>
+          {/if}
+          <button class="secondary" onclick={loadRuns} title="Refresh">↻</button>
+        </span>
       </h2>
       {#if loadError}
         <p class="err">conductor unreachable — is it running on :8787? ({loadError})</p>
@@ -246,6 +307,7 @@
             <div class="rid">{r.id}</div>
             <span class="badge b-{r.stage}">{r.stage}</span>
             <span class="muted">{r.project_id ?? ''}</span>
+            <button class="del-run" title="Delete run" aria-label="Delete run" onclick={(e) => delRun(e, r.id)}>×</button>
           </li>
         {:else}
           <li class="muted">no runs yet</li>
@@ -312,6 +374,22 @@
           </tbody>
         </table>
 
+        {#if researchRows.length}
+          <h2>Research sources <span class="muted">(grounding inputs per fan-out agent)</span></h2>
+          <table>
+            <thead><tr><th>Source</th><th class="num">Sources</th><th>Notes</th></tr></thead>
+            <tbody>
+              {#each researchRows as r}
+                <tr>
+                  <td>{r.source}</td>
+                  <td class="num" class:empty-src={r.count === 0}>{r.count}</td>
+                  <td class="muted">{r.notes || '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+
         <h2>Output</h2>
         {#if detail.output?.markdown}
           <div class="output">{@html outputHtml}</div>
@@ -334,159 +412,205 @@
 </div>
 
 <style>
-  /* Dark, dense "advanced view" — scoped so it doesn't fight the app's light theme. */
-  .inspector {
-    color-scheme: dark;
-    background: #0b0c0e;
-    color: #e6e7e9;
-    min-height: 100vh;
-    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
-  }
+  /* Light "runs workspace" — uses the shared product tokens so it reads as one
+     surface with the rest of the app (Overview / Ideation / Settings). */
+  .inspector { color: var(--text); }
   .inspector * { box-sizing: border-box; }
+
+  /* Standalone header (only when not embedded). */
   header {
-    padding: 14px 20px;
-    border-bottom: 1px solid #1d2025;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: baseline;
-    gap: 12px;
+    gap: 0.75rem;
+    background: var(--surface);
   }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  header .sub { color: #7c8190; font-size: 12px; }
-  .back {
-    background: #1b1e24;
-    color: #b9c0cc;
-    border: 1px solid #262b33;
-    border-radius: 6px;
-    padding: 5px 12px;
-    font: inherit;
-    cursor: pointer;
-  }
-  .back:hover { border-color: #2f6feb; }
+  header h1 { font-size: 1.05rem; margin: 0; font-weight: 700; }
+  header .sub { color: var(--muted); font-size: 0.8rem; }
+
   .wrap {
     display: grid;
-    grid-template-columns: 340px 1fr;
-    height: calc(100vh - 51px);
+    grid-template-columns: 320px 1fr;
+    gap: 1.25rem;
+    align-items: start;
+    max-width: 76rem;
+    margin: 0 auto;
+    padding: 1.5rem 1.5rem 4rem;
   }
-  /* Embedded as a project's Runs tab — no standalone header; fit below the
-     app top bar + project header instead of claiming the whole viewport. */
-  .inspector.embedded { min-height: auto; }
-  .inspector.embedded .wrap { height: calc(100vh - 210px); min-height: 30rem; }
-  .left { border-right: 1px solid #1d2025; overflow-y: auto; padding: 16px; }
-  .right { overflow-y: auto; padding: 20px 24px; }
+
+  /* Both panes are product cards. The new-run form sticks while the detail scrolls. */
+  .left,
+  .right {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .left {
+    padding: 1.1rem 1.2rem;
+    position: sticky;
+    top: 1.5rem;
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
+  }
+  .right { padding: 1.3rem 1.5rem; min-height: 26rem; }
+
   h2 {
-    font-size: 12px;
+    font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: #7c8190;
-    margin: 18px 0 8px;
+    color: var(--muted);
+    margin: 1.3rem 0 0.6rem;
+    font-weight: 600;
   }
+  .left h2:first-child { margin-top: 0; }
   .runs-head { display: flex; justify-content: space-between; align-items: center; }
-  label { display: block; font-size: 12px; color: #9aa0ad; margin: 8px 0 3px; }
+  .rh-actions { display: flex; gap: 0.3rem; align-items: center; }
+  label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--muted); margin: 0.6rem 0 0.25rem; }
   input, select, textarea {
     width: 100%;
-    background: #121419;
-    border: 1px solid #262b33;
-    color: #e6e7e9;
-    border-radius: 6px;
-    padding: 7px 9px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem;
     font: inherit;
+    font-size: 0.9rem;
   }
-  textarea { resize: vertical; min-height: 56px; }
-  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .pick { margin-bottom: 6px; color: #9aa0ad; }
+  input:focus, select:focus, textarea:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-color: var(--accent);
+  }
+  textarea { resize: vertical; min-height: 3.5rem; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .pick { margin-bottom: 0.4rem; color: var(--muted); }
   button.start {
-    background: #2f6feb;
+    background: var(--accent);
     color: #fff;
-    border: 0;
-    border-radius: 6px;
-    padding: 9px 14px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 0.9rem;
     font: inherit;
     font-weight: 600;
     cursor: pointer;
-    margin-top: 12px;
+    margin-top: 0.9rem;
     width: 100%;
+    transition: background 0.1s ease, border-color 0.1s ease;
   }
+  button.start:hover:not(:disabled) { background: var(--accent-ink); border-color: var(--accent-ink); }
   button.start:disabled { opacity: 0.5; cursor: default; }
   button.secondary {
-    background: #1b1e24;
-    color: #b9c0cc;
-    border: 1px solid #262b33;
-    border-radius: 6px;
-    padding: 3px 9px;
+    background: var(--surface);
+    color: var(--muted);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.55rem;
     font: inherit;
     cursor: pointer;
   }
-  .err { color: #ff8a8a; font-size: 12px; }
+  button.secondary:hover { border-color: var(--faint); color: var(--text); }
+  .err { color: #b91c1c; font-size: 0.8rem; }
   .runlist { list-style: none; padding: 0; margin: 0; }
   .runlist li {
-    padding: 9px 10px;
-    border: 1px solid #1d2025;
-    border-radius: 7px;
-    margin-bottom: 6px;
+    position: relative;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
     cursor: pointer;
+    transition: border-color 0.1s ease, background 0.1s ease;
   }
-  .runlist li:hover { border-color: #2f6feb; }
-  .runlist li.active { border-color: #2f6feb; background: #11161f; }
-  .runlist .rid { font-family: ui-monospace, monospace; font-size: 11px; color: #9aa0ad; }
+  .runlist li:hover { border-color: var(--faint); }
+  .del-run {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--faint);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s ease, background 0.1s ease, color 0.1s ease;
+  }
+  .runlist li:hover .del-run, .del-run:focus-visible { opacity: 1; }
+  .del-run:hover { background: #fee2e2; color: #b91c1c; }
+  .runlist li.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+  .runlist .rid { font-family: ui-monospace, monospace; font-size: 0.7rem; color: var(--muted); }
   .badge {
     display: inline-block;
-    padding: 1px 8px;
+    padding: 0.1rem 0.55rem;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 0.7rem;
     font-weight: 600;
   }
-  .b-intent { background: #2a2f1a; color: #d6e07a; }
-  .b-research { background: #14233a; color: #6fb6ff; }
-  .b-synthesis { background: #2a1a33; color: #d29bff; }
-  .b-done { background: #143420; color: #6fe09a; }
-  .b-failed { background: #3a1414; color: #ff8a8a; }
-  .detail-head { display: flex; align-items: center; gap: 10px; }
-  .timeline { display: flex; gap: 6px; align-items: center; margin: 6px 0 18px; flex-wrap: wrap; }
-  .timeline .step { padding: 3px 10px; border-radius: 6px; background: #15181d; color: #565c68; font-size: 12px; }
-  .timeline .step.on { color: #e6e7e9; }
-  .timeline .arrow { color: #3a3f47; }
-  table { width: 100%; border-collapse: collapse; margin: 4px 0 16px; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1a1d22; }
+  .b-intent { background: #fef3c7; color: #92400e; }
+  .b-research { background: #dbeafe; color: #1e40af; }
+  .b-synthesis { background: #ede9fe; color: #6d28d9; }
+  .b-done { background: #dcfce7; color: #166534; }
+  .b-failed { background: #fee2e2; color: #b91c1c; }
+  .detail-head { display: flex; align-items: center; gap: 0.6rem; }
+  .timeline { display: flex; gap: 0.4rem; align-items: center; margin: 0.5rem 0 1.2rem; flex-wrap: wrap; }
+  .timeline .step { padding: 0.2rem 0.65rem; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--border); color: var(--faint); font-size: 0.78rem; }
+  .timeline .step.on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+  .timeline .arrow { color: var(--faint); }
+  table { width: 100%; border-collapse: collapse; margin: 0.3rem 0 1rem; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
   th {
-    color: #7c8190;
+    color: var(--muted);
     font-weight: 600;
-    font-size: 11px;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  td.empty-src { color: #b45309; font-weight: 700; }
+  .mono { font-family: ui-monospace, monospace; font-size: 0.78rem; }
   .output {
-    background: #0e1014;
-    border: 1px solid #1d2025;
-    border-radius: 8px;
-    padding: 14px 18px;
-    max-height: 520px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.9rem 1.2rem;
+    max-height: 560px;
     overflow-y: auto;
   }
   .output :global(h1),
   .output :global(h2),
-  .output :global(h3) { color: #e6e7e9; text-transform: none; letter-spacing: 0; margin: 14px 0 8px; }
+  .output :global(h3) { color: var(--text); text-transform: none; letter-spacing: 0; margin: 0.9rem 0 0.5rem; }
   .output :global(p),
-  .output :global(li) { color: #c7cbd2; }
-  .output :global(a) { color: #6fb6ff; }
+  .output :global(li) { color: var(--text); }
+  .output :global(a) { color: var(--accent); }
   .output :global(code) {
-    background: #1a1d22;
-    padding: 1px 5px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    padding: 0.05rem 0.3rem;
     border-radius: 4px;
     font-family: ui-monospace, monospace;
-    font-size: 12px;
+    font-size: 0.8rem;
   }
   .output :global(pre) {
-    background: #15181d;
-    padding: 12px;
-    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 0.75rem;
+    border-radius: var(--radius-sm);
     overflow-x: auto;
   }
-  .muted { color: #7c8190; }
-  .total { font-weight: 700; color: #6fe09a; }
-  .empty { color: #565c68; padding: 30px 0; text-align: center; }
-  .grounding { padding-left: 18px; }
-  .g-grounded { color: #6fe09a; }
-  .g-flagged { color: #ffb86b; }
+  .muted { color: var(--muted); }
+  .total { font-weight: 700; color: #166534; }
+  .empty { color: var(--faint); padding: 2rem 0; text-align: center; }
+  .grounding { padding-left: 1.1rem; }
+  .g-grounded { color: #166534; }
+  .g-flagged { color: #b45309; }
+
+  @media (max-width: 720px) {
+    .wrap { grid-template-columns: 1fr; }
+    .left { position: static; max-height: none; }
+  }
 </style>
