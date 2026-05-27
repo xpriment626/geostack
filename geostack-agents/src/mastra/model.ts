@@ -1,4 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { createOpenAI } from '@ai-sdk/openai'
 
 /**
  * Build the AI SDK language model for a Geostack agent.
@@ -41,6 +42,18 @@ export function buildModel(modelOverride?: string) {
 		console.warn(
 			'[model] No MODEL_API_KEY / OPENROUTER_API_KEY set — OpenRouter calls will 401. Fill geostack-agents/.env.'
 		)
+	}
+
+	// xAI Grok models (x-ai/*) reject the @openrouter provider's tool-schema /
+	// param serialization with a 200-OK body error "Invalid arguments passed to
+	// the model" once a real toolset is attached (deepseek tolerates the same
+	// payload). They DO accept the vanilla OpenAI Chat Completions shape — so
+	// route x-ai/* through @ai-sdk/openai .chat() against OpenRouter, with NO
+	// reasoning param. (Proven recipe; x_search still auto-wires server-side for
+	// x-ai/* on OpenRouter. .chat() forces Chat Completions — OpenRouter rejects
+	// the /responses shape @ai-sdk/openai v2 defaults to.)
+	if (/^x-ai\//.test(modelName)) {
+		return createOpenAI({ baseURL, apiKey }).chat(modelName)
 	}
 
 	const openrouter = createOpenRouter({ apiKey, baseURL })

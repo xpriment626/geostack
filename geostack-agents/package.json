@@ -9,9 +9,10 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@openrouter/ai-sdk-provider": "^2.9.0",
+    "@ai-sdk/openai": "^2.0.106",
     "@mastra/core": "^1.28.0",
     "@mastra/mcp": "^1.6.0",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "yaml": "^2.6.0",
     "zod": "^3.25.76"
   },

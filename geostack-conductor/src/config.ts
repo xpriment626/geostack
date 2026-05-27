@@ -10,15 +10,11 @@ export const PROXY_NAME = 'conductor'
 
 export const AGENT_VERSION = '0.1.0'
 
-// Research session A: web/citation landscape (exa) + docs (deepwiki).
-// grok-agent (live X via x_search) is BUILT + wired but held OUT of the default
-// lane: grok-4.3 over OpenRouter-direct returns HTTP 200 with provider error
-// "Invalid arguments passed to the model" when sent reasoning + the full coral
-// function-calling toolset (deepseek tolerates the same payload). Needs a
-// provider-compat fix before re-enabling — see docs/notes. Re-add 'grok-agent'
-// here once resolved (all its files/registration remain in place). arxiv
-// deferred until a source is picked.
-export const RESEARCH_AGENTS = ['exa-agent', 'deepwiki-agent'] as const
+// Research session A: web/citation landscape (exa), docs (deepwiki), live X
+// discourse (grok-4.3 via x_search). grok routes through the OpenAI-compat
+// .chat() shape in model.ts (the @openrouter provider's tool serialization
+// breaks grok). arxiv deferred until a source is picked.
+export const RESEARCH_AGENTS = ['exa-agent', 'deepwiki-agent', 'grok-agent'] as const
 // Synthesis session B. geo-agent split into strategist (GEO plan) + writer
 // (content production); the conductor drives strategist → writer → verify → style.
 export const SYNTHESIS_AGENTS = ['strategist-agent', 'writer-agent', 'verify-agent', 'style-agent'] as const
