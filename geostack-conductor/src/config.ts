@@ -10,10 +10,18 @@ export const PROXY_NAME = 'conductor'
 
 export const AGENT_VERSION = '0.1.0'
 
-// Research session A (arxiv deferred for reroll 1 — added once a source is picked).
+// Research session A: web/citation landscape (exa) + docs (deepwiki).
+// grok-agent (live X via x_search) is BUILT + wired but held OUT of the default
+// lane: grok-4.3 over OpenRouter-direct returns HTTP 200 with provider error
+// "Invalid arguments passed to the model" when sent reasoning + the full coral
+// function-calling toolset (deepseek tolerates the same payload). Needs a
+// provider-compat fix before re-enabling — see docs/notes. Re-add 'grok-agent'
+// here once resolved (all its files/registration remain in place). arxiv
+// deferred until a source is picked.
 export const RESEARCH_AGENTS = ['exa-agent', 'deepwiki-agent'] as const
-// Synthesis session B.
-export const SYNTHESIS_AGENTS = ['geo-agent', 'verify-agent', 'style-agent'] as const
+// Synthesis session B. geo-agent split into strategist (GEO plan) + writer
+// (content production); the conductor drives strategist → writer → verify → style.
+export const SYNTHESIS_AGENTS = ['strategist-agent', 'writer-agent', 'verify-agent', 'style-agent'] as const
 
 // How many times to attempt the research fan-out. A fresh session re-spawns the
 // agents (new MCP tool-load), so a retry recovers from a transient connector
@@ -24,9 +32,19 @@ export const RESEARCH_ATTEMPTS = Number(process.env.GEOSTACK_RESEARCH_ATTEMPTS ?
 export const SESSION_TTL_MS = Number(process.env.GEOSTACK_SESSION_TTL_MS ?? 1_800_000)
 
 // Readiness + completion polling budgets (ms). Sized for slow reasoning models
-// (deepseek-v4-pro ~3min/turn): research is 2 agents in parallel; synthesis is
-// a 3-agent sequential chain (geo→verify→style) with up to 2 geo↔verify rounds,
-// so it needs a much larger budget. Override per-run via env.
+// (deepseek-v4-pro ~3min/turn): research is N agents in parallel; synthesis is
+// now a CONDUCTOR-DRIVEN STAR — the conductor waits for one agent's envelope
+// before the next hop. Override per-run via env.
 export const READY_TIMEOUT_MS = Number(process.env.GEOSTACK_READY_TIMEOUT_MS ?? 90_000)
 export const RESEARCH_TIMEOUT_MS = Number(process.env.GEOSTACK_RESEARCH_TIMEOUT_MS ?? 360_000)
+// Legacy whole-stage ceiling reference (the star uses the per-hop budget below).
 export const SYNTHESIS_TIMEOUT_MS = Number(process.env.GEOSTACK_SYNTHESIS_TIMEOUT_MS ?? 900_000)
+
+// PER-HOP synthesis budget: how long the conductor waits for any single agent's
+// envelope (one slow reasoning turn ≈ 3min). Total stage time ≈ hops × this.
+export const SYNTHESIS_STEP_TIMEOUT_MS = Number(process.env.GEOSTACK_SYNTHESIS_STEP_TIMEOUT_MS ?? 300_000)
+
+// Max grounding rounds the conductor drives (writer↔verify). The conductor owns
+// this cap now — the agents are stateless about the loop. Matches the old hard
+// 2-round limit verify-agent used to self-enforce.
+export const GROUNDING_ROUNDS = Number(process.env.GEOSTACK_GROUNDING_ROUNDS ?? 2)

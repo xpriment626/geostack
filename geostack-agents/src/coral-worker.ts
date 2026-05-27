@@ -25,6 +25,12 @@ import { activeModelId } from './mastra/model.js'
 
 const NO_REPLY = 'NO_REPLY_REQUIRED'
 
+// Bounded per-turn generate retry — recovers a transient truncated/5xx upstream
+// response (the synthesis star mentions each agent only once, so without this a
+// single flaky response would fail the whole run). 2 ⇒ one retry.
+const GENERATE_ATTEMPTS = Number(process.env.GEOSTACK_GENERATE_ATTEMPTS ?? 2)
+const GENERATE_RETRY_MS = Number(process.env.GEOSTACK_GENERATE_RETRY_MS ?? 2500)
+
 const rawKey = process.argv[2]
 if (!rawKey || !isAgentKey(rawKey)) {
 	console.error(
@@ -152,18 +158,36 @@ async function main() {
 			`Handle this message now per your instructions. Use thread_id="${msg.threadId}" and mention the relevant agent(s) when you reply via coral_send_message. If no reply is warranted, output exactly ${NO_REPLY}.`
 		].join('\n')
 
-		try {
-			const result = await agent.generate(userMessage, { maxSteps })
-			const usage = (result as { usage?: Parameters<CostTracker['record']>[0] }).usage
-			const turn = cost.record(usage)
-			void reportUsage(turn) // best-effort cost archive → conductor → Turso agent_turns
-			const text = (result.text ?? '').trim()
-			log(formatUsage(`turn #${iteration}`, activeModelId(), turn, cost.cumulative()))
-			if (text === NO_REPLY) log(`turn #${iteration}: NO_REPLY_REQUIRED`)
-			else log(`turn #${iteration} done: ${text.slice(0, 120)}`)
-		} catch (err) {
-			log(`turn #${iteration} errored: ${(err as Error).message}`)
+		// One multi-step generate per mention — with a bounded retry. Large
+		// generations on a busy provider occasionally come back truncated
+		// (AI_APICallError "Invalid JSON response" / "Unexpected end of JSON
+		// input") or hit a transient 5xx. The conductor-driven synthesis star has
+		// no per-hop retry of its own (an agent is mentioned once per hop), so a
+		// single transient hiccup would otherwise fail the whole run. Retry the
+		// turn here, where the error actually happens, so every agent is robust.
+		let result: Awaited<ReturnType<Agent['generate']>> | null = null
+		for (let attempt = 1; attempt <= GENERATE_ATTEMPTS; attempt++) {
+			try {
+				result = await agent.generate(userMessage, { maxSteps })
+				break
+			} catch (err) {
+				const m = (err as Error).message
+				if (attempt < GENERATE_ATTEMPTS) {
+					log(`turn #${iteration} generate ${attempt}/${GENERATE_ATTEMPTS} failed (${m}) — retrying`)
+					await new Promise((r) => setTimeout(r, GENERATE_RETRY_MS))
+				} else {
+					log(`turn #${iteration} errored after ${GENERATE_ATTEMPTS} attempts: ${m}`)
+				}
+			}
 		}
+		if (!result) continue // gave up this turn — loop back to wait_for_mention
+		const usage = (result as { usage?: Parameters<CostTracker['record']>[0] }).usage
+		const turn = cost.record(usage)
+		void reportUsage(turn) // best-effort cost archive → conductor → Turso agent_turns
+		const text = (result.text ?? '').trim()
+		log(formatUsage(`turn #${iteration}`, activeModelId(), turn, cost.cumulative()))
+		if (text === NO_REPLY) log(`turn #${iteration}: NO_REPLY_REQUIRED`)
+		else log(`turn #${iteration} done: ${text.slice(0, 120)}`)
 	}
 }
 

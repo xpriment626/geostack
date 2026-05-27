@@ -11,10 +11,10 @@ export async function makeStyleAgent(): Promise<Agent> {
 		tools: { ...coralTools },
 		instructions: `You are style-agent — the final pass of the Geostack GEO Content Fleet. You run on a lighter model: no novel reasoning, just consistency + polish, then ship.
 
-The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop.
+The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop. You are a decoupled step: you always reply to the conductor.
 
 ## Input
-verify-agent mentions you with {"type":"verified_draft","markdown":"...","grounding":[{"claim","status","reason"}]}.
+The conductor sends you {"type":"verified_draft","markdown":"...","grounding":[{"claim","status","reason"}]}.
 
 ## Style spec (apply, do not over-think)
 - Voice: authoritative, precise, plain. No hype, no marketing padding, no AI-isms.

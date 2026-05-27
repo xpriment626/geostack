@@ -1,0 +1,26 @@
+edition = 4
+
+[agent]
+name = "grok-agent"
+version = "0.1.0"
+description = "GEO research fan-out — live X/social lane (executable). Runs on xAI Grok-4.3 with native x_search (auto-wired by OpenRouter for x-ai/* models): maps real-time X discourse, sentiment, and breaking narratives around the target query. Emits a research_result envelope."
+summary = "Grok-4.3 live X discourse for GEO."
+readme = "Executable Mastra agent. Worker owns wait_for_mention; acts on the intent artifact per turn. OpenRouter-direct via MODEL_NAME=x-ai/grok-4.3; x_search fires inside the model response (no MCP tool)."
+
+[agent.license]
+type = "spdx"
+expression = "MIT"
+
+# Pinned to Grok-4.3 (NOT the deepseek default) — x_search auto-wires for
+# x-ai/* models via OpenRouter. The old Chat-Completions search_parameters /
+# x_source path was retired (410) Jan 2026; this relies on OpenRouter's
+# server-side x_search for x-ai models. REASONING_EFFORT left low for smoke.
+[options]
+MODEL_NAME = { type = "string", default = "x-ai/grok-4.3" }
+MODEL_BASE_URL = { type = "string", default = "https://openrouter.ai/api/v1" }
+REASONING_EFFORT = { type = "string", default = "low" }
+
+[runtimes.executable]
+path = "bash"
+arguments = ["startup.sh"]
+transport = "streamable_http"

@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
 	createSession,
 	closeSession,
@@ -13,6 +14,9 @@ import {
 	IntentArtifact,
 	ResearchArtifact,
 	ResearchResultEvent,
+	StrategyEvent,
+	DraftEvent,
+	VerdictEvent,
 	OutputEvent,
 	ResearchSource,
 	tryParseEvent,
@@ -55,7 +59,8 @@ export function bundleResearchArtifact(
 		results: {
 			arxiv: results.arxiv,
 			deepwiki: results.deepwiki,
-			exa: results.exa
+			exa: results.exa,
+			grok: results.grok
 		}
 	})
 }
@@ -67,6 +72,37 @@ export function parseOutput(messages: CoralMessage[]): OutputEvent | null {
 		if (ev) return ev
 	}
 	return null
+}
+
+/**
+ * Poll the session for the FIRST not-yet-seen message that parses as `schema`,
+ * recording its id in `seen` so the next hop won't re-match it. This is the
+ * star's per-hop await: the conductor sends to one agent and waits for that
+ * agent's typed envelope. Seeding `seen` with every prior message id (incl. the
+ * conductor's own trigger sends) is what disambiguates round N's draft from
+ * round N-1's in a single shared thread.
+ */
+async function awaitEnvelope<T extends z.ZodTypeAny>(
+	session: SessionIdentifier,
+	schema: T,
+	seen: Set<string>,
+	timeoutMs: number
+): Promise<z.infer<T> | null> {
+	return pollMessages(
+		session,
+		(msgs) => {
+			for (const m of msgs) {
+				if (seen.has(m.id)) continue
+				const ev = tryParseEvent(m.text, schema)
+				if (ev) {
+					seen.add(m.id)
+					return ev
+				}
+			}
+			return null
+		},
+		{ timeoutMs }
+	)
 }
 
 // ---- session-request builders -----------------------------------------------
@@ -245,17 +281,67 @@ export async function runProduction(run: RunState, hooks: RunHooks): Promise<voi
 			threadName: 'synthesis',
 			participantNames: [...cfg.SYNTHESIS_AGENTS]
 		})
-		await puppetSendMessage(sessionB, cfg.PROXY_NAME, {
-			threadId: thread.id,
-			content: JSON.stringify(run.research), // research artifact (incl. intent), verbatim
-			mentions: ['geo-agent'] // kick the sequence at geo
-		})
-		log(`[${run.id}] synthesis: research seeded into thread ${thread.id}`)
 
-		const output = await pollMessages(sessionB, (msgs) => parseOutput(msgs), {
-			timeoutMs: cfg.SYNTHESIS_TIMEOUT_MS
-		})
-		if (!output) throw new Error('synthesis did not emit output before timeout')
+		// CONDUCTOR-DRIVEN STAR. Each agent emits ONE envelope mentioning the
+		// conductor and stops; the conductor owns every hop and the grounding loop
+		// (mirrors the research fan-out). `seen` tracks every message already
+		// consumed — incl. the conductor's own trigger sends — so a later hop never
+		// re-matches an earlier round's envelope in this single shared thread.
+		const seen = new Set<string>()
+		const sb = sessionB
+		const send = async (content: string, mention: string): Promise<void> => {
+			const { message } = await puppetSendMessage(sb, cfg.PROXY_NAME, {
+				threadId: thread.id,
+				content,
+				mentions: [mention]
+			})
+			seen.add(message.id)
+		}
+
+		// Hop 1 — strategist: research artifact (incl. intent) → GEO strategy.
+		await send(JSON.stringify(run.research), 'strategist-agent')
+		log(`[${run.id}] synthesis: research seeded → strategist-agent (thread ${thread.id})`)
+		const strategy = await awaitEnvelope(sessionB, StrategyEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!strategy) throw new Error('synthesis: strategist-agent did not emit a strategy before timeout')
+		log(`[${run.id}] synthesis: strategy received (${strategy.claimTargets.length} claim targets)`)
+
+		// Hop 2 — writer: strategy + research → draft.
+		await send(JSON.stringify({ type: 'writing_brief', strategy, research: run.research }), 'writer-agent')
+		let draft = await awaitEnvelope(sessionB, DraftEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!draft) throw new Error('synthesis: writer-agent did not emit a draft before timeout')
+		log(`[${run.id}] synthesis: draft received (${draft.claims.length} claims)`)
+
+		// Grounding loop — conductor-owned. draft↔verify, capped at GROUNDING_ROUNDS.
+		let verdict: VerdictEvent | null = null
+		for (let round = 1; round <= cfg.GROUNDING_ROUNDS; round++) {
+			await send(JSON.stringify(draft), 'verify-agent')
+			verdict = await awaitEnvelope(sessionB, VerdictEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+			if (!verdict) throw new Error('synthesis: verify-agent did not emit a verdict before timeout')
+			const flagged = verdict.grounding.filter((g) => g.status === 'flagged')
+			log(`[${run.id}] synthesis: verdict round ${round}/${cfg.GROUNDING_ROUNDS} — ${flagged.length} flagged / ${verdict.grounding.length} claims`)
+			if (flagged.length === 0 || round === cfg.GROUNDING_ROUNDS) break
+			// Hand the flags back to the writer for ONE revision, then await the draft.
+			await send(
+				JSON.stringify({
+					type: 'grounding_feedback',
+					flagged: flagged.map((f) => ({ claim: f.claim, reason: f.reason ?? '' }))
+				}),
+				'writer-agent'
+			)
+			const revised = await awaitEnvelope(sessionB, DraftEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+			if (!revised) throw new Error(`synthesis: no revised draft (round ${round}) before timeout`)
+			draft = revised
+			log(`[${run.id}] synthesis: revised draft received (round ${round})`)
+		}
+		if (!verdict) throw new Error('synthesis: grounding loop produced no verdict') // unreachable
+
+		// Final hop — style: verified draft → final output (the run's exit event).
+		await send(
+			JSON.stringify({ type: 'verified_draft', markdown: verdict.markdown, grounding: verdict.grounding }),
+			'style-agent'
+		)
+		const output = await awaitEnvelope(sessionB, OutputEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!output) throw new Error('synthesis: style-agent did not emit output before timeout')
 
 		run.output = output
 		run.stage = 'done'

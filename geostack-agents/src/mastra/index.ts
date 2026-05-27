@@ -8,7 +8,10 @@ import { makeTemplateAgent } from './agents/template-agent.js'
 // GEO Content Fleet agents.
 import { makeExaAgent } from './agents/exa-agent.js'
 import { makeDeepwikiAgent } from './agents/deepwiki-agent.js'
+import { makeGrokAgent } from './agents/grok-agent.js'
 import { makeGeoAgent } from './agents/geo-agent.js'
+import { makeStrategistAgent } from './agents/strategist-agent.js'
+import { makeWriterAgent } from './agents/writer-agent.js'
 import { makeVerifyAgent } from './agents/verify-agent.js'
 import { makeStyleAgent } from './agents/style-agent.js'
 
@@ -27,7 +30,10 @@ export const agentFactories: Record<string, () => Promise<Agent>> = {
 	// GEO Content Fleet
 	'exa-agent': makeExaAgent,
 	'deepwiki-agent': makeDeepwikiAgent,
-	'geo-agent': makeGeoAgent,
+	'grok-agent': makeGrokAgent, // live X discourse via Grok-4.3 x_search
+	'geo-agent': makeGeoAgent, // retired from the active lane; kept for re-enable
+	'strategist-agent': makeStrategistAgent, // GEO-strategy half of the old geo-agent
+	'writer-agent': makeWriterAgent, // content-production half of the old geo-agent
 	'verify-agent': makeVerifyAgent,
 	'style-agent': makeStyleAgent
 }
@@ -42,8 +48,11 @@ export const agentMaxSteps: Record<string, number> = {
 	// GEO fleet
 	'exa-agent': 12, // a few Exa searches + emit
 	'deepwiki-agent': 12, // structure/contents/ask calls + emit
-	'geo-agent': 8, // synthesise (+ revise on grounding feedback) + emit
-	'verify-agent': 6, // check claims + route
+	'grok-agent': 4, // x_search fires inside the response → reason + emit
+	'geo-agent': 8, // (retired) synthesise + emit
+	'strategist-agent': 8, // reason over research → strategy + emit
+	'writer-agent': 8, // write draft (+ revise on grounding feedback) + emit
+	'verify-agent': 6, // check claims + emit verdict
 	'style-agent': 4 // polish + emit output
 }
 

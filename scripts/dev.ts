@@ -39,7 +39,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const AGENTS_DIR = join(ROOT, 'geostack-agents')
 const CONDUCTOR_DIR = join(ROOT, 'geostack-conductor')
 const APP_DIR = join(ROOT, 'app')
-const AGENTS = ['exa-agent', 'deepwiki-agent', 'geo-agent', 'verify-agent', 'style-agent']
+const AGENTS = ['exa-agent', 'deepwiki-agent', 'grok-agent', 'strategist-agent', 'writer-agent', 'verify-agent', 'style-agent']
 const PORTS = [5555, 8787, 5174]
 
 // ---- pretty prefixed logging ------------------------------------------------

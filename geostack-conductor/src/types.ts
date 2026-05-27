@@ -30,7 +30,7 @@ export type IntentArtifact = z.infer<typeof IntentArtifact>
 
 // ---- Research stage (session A) ---------------------------------------------
 
-export const ResearchSource = z.enum(['arxiv', 'deepwiki', 'exa'])
+export const ResearchSource = z.enum(['arxiv', 'deepwiki', 'exa', 'grok'])
 export type ResearchSource = z.infer<typeof ResearchSource>
 
 export const SourceRef = z.object({
@@ -60,12 +60,44 @@ export const ResearchArtifact = z.object({
 	results: z.object({
 		arxiv: ResearchResultEvent.optional(),
 		deepwiki: ResearchResultEvent.optional(),
-		exa: ResearchResultEvent.optional()
+		exa: ResearchResultEvent.optional(),
+		grok: ResearchResultEvent.optional()
 	})
 })
 export type ResearchArtifact = z.infer<typeof ResearchArtifact>
 
 // ---- Synthesis stage (session B) --------------------------------------------
+//
+// Synthesis is a CONDUCTOR-DRIVEN STAR (mirrors the research fan-out): every
+// agent emits ONE typed envelope mentioning the conductor and stops. The
+// conductor — not the agents — owns the sequence and the grounding loop. Each
+// envelope below is the parse-time contract for one hop; an agent never names
+// its successor, which is what makes the agents decouple-able / standalone.
+
+export const ClaimCite = z.object({
+	claim: z.string(),
+	cites: z.array(z.string()) // url-or-ref drawn from the research artifact
+})
+
+/**
+ * Hop output: strategist → conductor. The GEO PLAN (not prose) — angle,
+ * structure, guidance — plus the claim→source map the writer executes. This is
+ * the "80% research" half of the old geo-agent, made its own decoupled step.
+ */
+export const StrategyEvent = z.object({
+	type: z.literal('strategy'),
+	strategy: z.string(), // JSON-string-escaped markdown: angle + outline + guidance
+	claimTargets: z.array(ClaimCite)
+})
+export type StrategyEvent = z.infer<typeof StrategyEvent>
+
+/** Hop output: writer (or, pre-split, geo) → conductor. A draft + its claims. */
+export const DraftEvent = z.object({
+	type: z.literal('draft'),
+	markdown: z.string(),
+	claims: z.array(ClaimCite)
+})
+export type DraftEvent = z.infer<typeof DraftEvent>
 
 export const GroundingEntry = z.object({
 	claim: z.string(),
@@ -73,7 +105,21 @@ export const GroundingEntry = z.object({
 	reason: z.string().optional()
 })
 
-/** Exit event emitted by style-agent into session B — the final output. */
+/**
+ * Hop output: verify → conductor. The per-claim grounding verdict + the draft
+ * markdown (unchanged — verify never rewrites). The conductor inspects
+ * `grounding` for any `flagged` entry and, with the round counter IT owns,
+ * decides loop-back-to-writer vs forward-to-style. Verify is stateless about
+ * the loop.
+ */
+export const VerdictEvent = z.object({
+	type: z.literal('verdict'),
+	markdown: z.string(),
+	grounding: z.array(GroundingEntry)
+})
+export type VerdictEvent = z.infer<typeof VerdictEvent>
+
+/** Exit event emitted by style-agent — the final output. */
 export const OutputEvent = z.object({
 	type: z.literal('output'),
 	markdown: z.string(),
