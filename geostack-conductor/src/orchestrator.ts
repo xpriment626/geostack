@@ -20,6 +20,7 @@ import {
 	OutputEvent,
 	ResearchSource,
 	tryParseEvent,
+	type RunResearchSource,
 	type RunState
 } from './types.js'
 import * as cfg from './config.js'
@@ -49,7 +50,7 @@ export function parseResearchResults(
 	return out
 }
 
-/** Structural bundle — verbatim, no LLM. geo-agent is the synthesis step. */
+/** Structural bundle — verbatim, no LLM; synthesis starts after this artifact. */
 export function bundleResearchArtifact(
 	intent: IntentArtifact,
 	results: Partial<Record<ResearchSource, ResearchResultEvent>>
@@ -138,6 +139,25 @@ function sessionRequest(workAgents: readonly string[]): CreateSessionRequest {
 	}
 }
 
+const SOURCE_ORDER: RunResearchSource[] = ['exa', 'deepwiki', 'grok']
+const SOURCE_TO_AGENT: Record<RunResearchSource, string> = {
+	exa: 'exa-agent',
+	deepwiki: 'deepwiki-agent',
+	grok: 'grok-agent'
+}
+
+function researchSourcesFor(intent: IntentArtifact): RunResearchSource[] {
+	const selected = new Set<RunResearchSource>(['exa'])
+	for (const source of intent.researchSources ?? []) {
+		if (SOURCE_ORDER.includes(source)) selected.add(source)
+	}
+	return SOURCE_ORDER.filter((source) => selected.has(source))
+}
+
+function researchAgentsFor(intent: IntentArtifact): string[] {
+	return researchSourcesFor(intent).map((source) => SOURCE_TO_AGENT[source])
+}
+
 // ---- the run driver ---------------------------------------------------------
 
 export interface RunHooks {
@@ -158,16 +178,17 @@ async function researchFanout(
 	run: RunState,
 	intent: IntentArtifact,
 	hooks: RunHooks,
-	attempt: number
+	attempt: number,
+	researchAgents: readonly string[]
 ): Promise<ResearchArtifact> {
 	const { log } = hooks
 	let sessionA: SessionIdentifier | null = null
 	try {
-		log(`[${run.id}] research (attempt ${attempt}/${cfg.RESEARCH_ATTEMPTS}): creating session A (${cfg.RESEARCH_AGENTS.join(', ')})`)
-		sessionA = await createSession(sessionRequest(cfg.RESEARCH_AGENTS))
+		log(`[${run.id}] research (attempt ${attempt}/${cfg.RESEARCH_ATTEMPTS}): creating session A (${researchAgents.join(', ')})`)
+		sessionA = await createSession(sessionRequest(researchAgents))
 		hooks.onSession?.({ stage: 'research', sessionId: sessionA.sessionId, phase: 'open' })
 
-		const ready = await waitForAgentsReady(sessionA, [...cfg.RESEARCH_AGENTS], {
+		const ready = await waitForAgentsReady(sessionA, [...researchAgents], {
 			timeoutMs: cfg.READY_TIMEOUT_MS
 		})
 		if (!ready.ok) {
@@ -181,12 +202,12 @@ async function researchFanout(
 
 		const { thread } = await puppetCreateThread(sessionA, cfg.PROXY_NAME, {
 			threadName: 'research',
-			participantNames: [...cfg.RESEARCH_AGENTS]
+			participantNames: [...researchAgents]
 		})
 		await puppetSendMessage(sessionA, cfg.PROXY_NAME, {
 			threadId: thread.id,
 			content: JSON.stringify(intent), // intent artifact, verbatim
-			mentions: [...cfg.RESEARCH_AGENTS]
+			mentions: [...researchAgents]
 		})
 		log(`[${run.id}] research: intent seeded into thread ${thread.id}`)
 
@@ -194,7 +215,7 @@ async function researchFanout(
 			sessionA,
 			(msgs) => {
 				const r = parseResearchResults(msgs)
-				return Object.keys(r).length >= cfg.RESEARCH_AGENTS.length ? r : null
+				return Object.keys(r).length >= researchAgents.length ? r : null
 			},
 			{ timeoutMs: cfg.RESEARCH_TIMEOUT_MS }
 		)
@@ -204,8 +225,8 @@ async function researchFanout(
 		// connector/tool-load failure). Thrown so the caller can retry / fail.
 		const totalSources = Object.values(results).reduce((n, ev) => n + (ev?.sources?.length ?? 0), 0)
 		if (totalSources === 0) {
-			const sources = cfg.RESEARCH_AGENTS.map((a) => a.replace('-agent', '')).join(' + ')
-			throw new Error(`no research sources returned (${sources} both empty) — likely a connector/tool-load failure`)
+			const sources = researchAgents.map((a) => a.replace('-agent', '')).join(' + ')
+			throw new Error(`no research sources returned (${sources} empty) — likely a connector/tool-load failure`)
 		}
 
 		log(`[${run.id}] research: collapsed ${Object.keys(results).join('+')} → ${totalSources} sources`)
@@ -229,6 +250,7 @@ export async function runProduction(run: RunState, hooks: RunHooks): Promise<voi
 		return
 	}
 	const intent = run.intent
+	const researchAgents = researchAgentsFor(intent)
 
 	// ---------- Session A: research fan-out (retried, then fail loud) ----------
 	run.stage = 'research'
@@ -237,7 +259,7 @@ export async function runProduction(run: RunState, hooks: RunHooks): Promise<voi
 		let lastErr: unknown
 		for (let attempt = 1; attempt <= cfg.RESEARCH_ATTEMPTS; attempt++) {
 			try {
-				run.research = await researchFanout(run, intent, hooks, attempt)
+				run.research = await researchFanout(run, intent, hooks, attempt, researchAgents)
 				lastErr = undefined
 				break
 			} catch (err) {
@@ -335,13 +357,13 @@ export async function runProduction(run: RunState, hooks: RunHooks): Promise<voi
 		}
 		if (!verdict) throw new Error('synthesis: grounding loop produced no verdict') // unreachable
 
-		// Final hop — style: verified draft → final output (the run's exit event).
+		// Final hop — visual: verified draft → final output (the run's exit event).
 		await send(
 			JSON.stringify({ type: 'verified_draft', markdown: verdict.markdown, grounding: verdict.grounding }),
-			'style-agent'
+			'visual-agent'
 		)
 		const output = await awaitEnvelope(sessionB, OutputEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
-		if (!output) throw new Error('synthesis: style-agent did not emit output before timeout')
+		if (!output) throw new Error('synthesis: visual-agent did not emit output before timeout')
 
 		run.output = output
 		run.stage = 'done'

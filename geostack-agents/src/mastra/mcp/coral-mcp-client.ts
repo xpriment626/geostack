@@ -29,7 +29,7 @@ export async function getCoralTools() {
  * outer worker loop owns waiting (farringdon pattern) — letting the LLM
  * call wait_for_mention itself re-introduces the per-iteration token burn
  * we saw on the prototype runtime. We also drop close_thread; only the
- * orchestrator (brief-agent) manages thread lifecycle, and it does so via
+ * conductor manages thread lifecycle, and it does so via
  * the worker, not the LLM.
  */
 export async function getCoralAgentTools(opts: { allowCloseThread?: boolean } = {}) {
@@ -68,7 +68,7 @@ export async function readCoralState(): Promise<unknown> {
 
 /**
  * coral_read_state surfaced as a tool, so an agent's LLM can inspect threads
- * mid-turn (e.g. brief-agent deriving the active thread + sender). Mastra
+ * mid-turn (e.g. deriving the active thread + sender). Mastra
  * surfaces resources via resources.read() but does not auto-expose them as
  * tools — this wrapper bridges that.
  */

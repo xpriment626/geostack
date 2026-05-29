@@ -15,9 +15,9 @@ export const AGENT_VERSION = '0.1.0'
 // .chat() shape in model.ts (the @openrouter provider's tool serialization
 // breaks grok). arxiv deferred until a source is picked.
 export const RESEARCH_AGENTS = ['exa-agent', 'deepwiki-agent', 'grok-agent'] as const
-// Synthesis session B. geo-agent split into strategist (GEO plan) + writer
-// (content production); the conductor drives strategist → writer → verify → style.
-export const SYNTHESIS_AGENTS = ['strategist-agent', 'writer-agent', 'verify-agent', 'style-agent'] as const
+// Synthesis session B. GEO strategy and writing are split; the conductor drives
+// strategist → writer → verify → visual.
+export const SYNTHESIS_AGENTS = ['strategist-agent', 'writer-agent', 'verify-agent', 'visual-agent'] as const
 
 // How many times to attempt the research fan-out. A fresh session re-spawns the
 // agents (new MCP tool-load), so a retry recovers from a transient connector

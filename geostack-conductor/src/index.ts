@@ -20,7 +20,12 @@ import {
 	getProject,
 	deleteProject,
 	deleteRun,
-	deleteProjectRuns
+	deleteProjectRuns,
+	createProfile,
+	updateProfile,
+	deleteProfile,
+	listProfiles,
+	getProfile
 } from './db.js'
 import { applyConfigToEnv, readConfig, writeConfig, redactedConfig, configPath, CONFIG_KEYS } from './local-config.js'
 
@@ -39,6 +44,22 @@ const safeJson = (v: unknown) => {
 		return v
 	}
 }
+
+const textOrUndefined = (v: unknown) => {
+	const s = String(v ?? '').trim()
+	return s ? s : undefined
+}
+
+const profileContext = (p: Record<string, unknown>) => ({
+	id: String(p.id ?? ''),
+	name: String(p.name ?? ''),
+	description: textOrUndefined(p.description),
+	identity: textOrUndefined(p.identity),
+	voice: textOrUndefined(p.voice),
+	audience: textOrUndefined(p.audience),
+	styleGuide: textOrUndefined(p.style_guide),
+	contextNotes: textOrUndefined(p.context_notes)
+})
 
 // ---- intent capture (conductor-side chat interview) -------------------------
 
@@ -138,11 +159,17 @@ app.post('/runs', async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: 'invalid intent artifact', issues: parsed.error.issues }, 400)
 	}
+	let intent = parsed.data
+	if (intent.profileId) {
+		const profile = await getProfile(intent.profileId)
+		if (!profile) return c.json({ error: 'profile not found' }, 404)
+		intent = IntentArtifact.parse({ ...intent, profile: profileContext(profile) })
+	}
 	const run: RunState = {
 		id: `run_${randomUUID()}`,
-		projectId: parsed.data.projectId,
+		projectId: intent.projectId,
 		stage: 'intent',
-		intent: parsed.data,
+		intent,
 		createdAt: Date.now()
 	}
 	runs.set(run.id, run)
@@ -244,6 +271,7 @@ app.post('/projects', async (c) => {
 		description: b.description,
 		audience: b.audience,
 		tone: b.tone,
+		profileId: b.profileId ?? b.profile_id,
 		topicMeta: b.topicMeta
 	})
 	return c.json({ id, ...(await getProject(id)) })
@@ -266,9 +294,63 @@ app.patch('/projects/:id', async (c) => {
 		description: b.description,
 		audience: b.audience,
 		tone: b.tone,
+		profileId: b.profileId ?? b.profile_id,
 		topicMeta: b.topicMeta
 	})
 	return c.json(await getProject(id))
+})
+
+// ---- profiles ---------------------------------------------------------------
+
+/** List reusable writer/company profiles. */
+app.get('/profiles', async (c) => c.json({ profiles: await listProfiles() }))
+
+/** Create a reusable writer/company profile. */
+app.post('/profiles', async (c) => {
+	const b = await c.req.json().catch(() => null)
+	const name = (b?.name ?? '').toString().trim()
+	if (!name) return c.json({ error: 'name required' }, 400)
+	const id = `prof_${randomUUID()}`
+	await createProfile(id, {
+		name,
+		description: b.description,
+		identity: b.identity,
+		voice: b.voice,
+		audience: b.audience,
+		styleGuide: b.styleGuide ?? b.style_guide,
+		contextNotes: b.contextNotes ?? b.context_notes
+	})
+	return c.json(await getProfile(id))
+})
+
+/** Fetch one profile. */
+app.get('/profiles/:id', async (c) => {
+	const p = await getProfile(c.req.param('id'))
+	if (!p) return c.json({ error: 'not found' }, 404)
+	return c.json(p)
+})
+
+/** Patch profile fields. */
+app.patch('/profiles/:id', async (c) => {
+	const id = c.req.param('id')
+	const b = await c.req.json().catch(() => null)
+	if (!b) return c.json({ error: 'invalid body' }, 400)
+	await updateProfile(id, {
+		name: b.name,
+		description: b.description,
+		identity: b.identity,
+		voice: b.voice,
+		audience: b.audience,
+		styleGuide: b.styleGuide ?? b.style_guide,
+		contextNotes: b.contextNotes ?? b.context_notes
+	})
+	return c.json(await getProfile(id))
+})
+
+/** Delete a profile and remove it from any project defaults. */
+app.delete('/profiles/:id', async (c) => {
+	await deleteProfile(c.req.param('id'))
+	return c.json({ ok: true })
 })
 
 /** Delete a project and everything under it (its runs + archive). Blocked if a run is live. */

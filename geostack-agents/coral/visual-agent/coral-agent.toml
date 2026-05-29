@@ -1,11 +1,11 @@
 edition = 4
 
 [agent]
-name = "style-agent"
+name = "visual-agent"
 version = "0.1.0"
-description = "Final pass (executable, lighter model). Enforces voice + structure consistency on the verified draft and emits the output envelope to the conductor. No novel reasoning; preserves the machine-parseable structure and citations."
-summary = "Final style pass; emits output."
-readme = "Executable Mastra agent. Worker owns wait_for_mention. Lighter model — consistency + polish only. OpenRouter-direct via MODEL_NAME."
+description = "Final presentation pass (executable, lighter model). Preserves the verified draft's structure and citations, adds light editorial polish, identifies grounded visual-aid opportunities, and emits the output envelope to the conductor."
+summary = "Final visual/presentation pass; emits output."
+readme = "Executable Mastra agent. Worker owns wait_for_mention. Lighter model — presentation polish now; Replicate-backed visual asset generation later. OpenRouter-direct via MODEL_NAME."
 
 [agent.license]
 type = "spdx"

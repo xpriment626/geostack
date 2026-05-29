@@ -7,7 +7,7 @@ import { z } from 'zod'
  *  - The intent artifact is a STRUCTURED object passed verbatim to every agent
  *    that needs it — no summarisation between handoffs.
  *  - The research artifact is a STRUCTURAL bundle of each research agent's
- *    output (no LLM, no compaction). geo-agent is the synthesis step.
+ *    output (no LLM, no compaction). Synthesis consumes that bundle unchanged.
  */
 
 // ---- Intent artifact (produced off-Coral, seeds session A) ------------------
@@ -17,11 +17,29 @@ export const FormatType = z.object({
 	depth: z.enum(['listicle', 'deep-dive'])
 })
 
+export const RunResearchSource = z.enum(['exa', 'deepwiki', 'grok'])
+export type RunResearchSource = z.infer<typeof RunResearchSource>
+
+export const ProfileContext = z.object({
+	id: z.string(),
+	name: z.string(),
+	description: z.string().optional(),
+	identity: z.string().optional(),
+	voice: z.string().optional(),
+	audience: z.string().optional(),
+	styleGuide: z.string().optional(),
+	contextNotes: z.string().optional()
+})
+export type ProfileContext = z.infer<typeof ProfileContext>
+
 export const IntentArtifact = z.object({
 	projectId: z.string(), // stubbed for reroll 1; real once projects land
 	anchorClaim: z.string(), // the claim we're building citation authority on
 	targetQuery: z.string(), // the agent-search query space to win "who to cite" in
 	formatType: FormatType,
+	researchSources: z.array(RunResearchSource).default(['exa']),
+	profileId: z.string().optional(),
+	profile: ProfileContext.optional(),
 	audience: z.string().optional(),
 	tone: z.string().optional(),
 	raw: z.string() // full structured brief in markdown, passed verbatim to agents
@@ -82,7 +100,7 @@ export const ClaimCite = z.object({
 /**
  * Hop output: strategist → conductor. The GEO PLAN (not prose) — angle,
  * structure, guidance — plus the claim→source map the writer executes. This is
- * the "80% research" half of the old geo-agent, made its own decoupled step.
+ * the "80% research" half of synthesis, made its own decoupled step.
  */
 export const StrategyEvent = z.object({
 	type: z.literal('strategy'),
@@ -91,7 +109,7 @@ export const StrategyEvent = z.object({
 })
 export type StrategyEvent = z.infer<typeof StrategyEvent>
 
-/** Hop output: writer (or, pre-split, geo) → conductor. A draft + its claims. */
+/** Hop output: writer → conductor. A draft + its claims. */
 export const DraftEvent = z.object({
 	type: z.literal('draft'),
 	markdown: z.string(),
@@ -109,7 +127,7 @@ export const GroundingEntry = z.object({
  * Hop output: verify → conductor. The per-claim grounding verdict + the draft
  * markdown (unchanged — verify never rewrites). The conductor inspects
  * `grounding` for any `flagged` entry and, with the round counter IT owns,
- * decides loop-back-to-writer vs forward-to-style. Verify is stateless about
+ * decides loop-back-to-writer vs forward-to-visual. Verify is stateless about
  * the loop.
  */
 export const VerdictEvent = z.object({
@@ -119,7 +137,7 @@ export const VerdictEvent = z.object({
 })
 export type VerdictEvent = z.infer<typeof VerdictEvent>
 
-/** Exit event emitted by style-agent — the final output. */
+/** Exit event emitted by visual-agent — the final output. */
 export const OutputEvent = z.object({
 	type: z.literal('output'),
 	markdown: z.string(),

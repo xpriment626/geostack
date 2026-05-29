@@ -9,6 +9,10 @@
  *   bun run scripts/smoke-run.ts
  */
 const API = process.env.CONDUCTOR_URL ?? 'http://localhost:8787'
+const researchSources = (process.env.GEOSTACK_SMOKE_SOURCES ?? 'exa')
+	.split(',')
+	.map((s) => s.trim())
+	.filter(Boolean)
 
 const intent = {
 	projectId: `smoke_${Date.now()}`,
@@ -16,6 +20,7 @@ const intent = {
 		"DeepSeek-V3's mixture-of-experts design reaches frontier-class reasoning at a fraction of the usual training cost",
 	targetQuery: 'how does DeepSeek train competitive LLMs so cheaply',
 	formatType: { mode: 'single', depth: 'deep-dive' },
+	researchSources,
 	audience: 'ML engineers and technical founders',
 	tone: 'precise, analytical, no hype',
 	raw: [

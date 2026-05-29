@@ -12,7 +12,7 @@ type = "spdx"
 expression = "MIT"
 
 # Smoke-test phase: deepseek-v4-pro (75% promo) to exercise thinking-model
-# handling. Prior (strong) default for the merged geo-agent: claude-sonnet-4.6.
+# handling. Prior strong default for the merged synthesis lane: claude-sonnet-4.6.
 [options]
 MODEL_NAME = { type = "string", default = "deepseek/deepseek-v4-pro" }
 MODEL_BASE_URL = { type = "string", default = "https://openrouter.ai/api/v1" }

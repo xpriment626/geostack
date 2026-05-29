@@ -55,7 +55,20 @@ export async function initSchema(): Promise<void> {
 				description TEXT,
 				audience TEXT,
 				tone TEXT,
+				profile_id TEXT,
 				topic_meta TEXT,
+				created_at INTEGER,
+				updated_at INTEGER
+			)`,
+			`CREATE TABLE IF NOT EXISTS profiles (
+				id TEXT PRIMARY KEY,
+				name TEXT,
+				description TEXT,
+				identity TEXT,
+				voice TEXT,
+				audience TEXT,
+				style_guide TEXT,
+				context_notes TEXT,
 				created_at INTEGER,
 				updated_at INTEGER
 			)`,
@@ -93,8 +106,13 @@ export async function initSchema(): Promise<void> {
 		],
 		'write'
 	)
+	try {
+		await c.execute(`ALTER TABLE projects ADD COLUMN profile_id TEXT`)
+	} catch {
+		// Existing local DBs already have the column after the first upgraded boot.
+	}
 	console.log(
-		`[db] store ready (projects, runs, agent_turns, sessions) — ${isCloud() ? 'Turso cloud' : `local file ${join(homedir(), '.geostack', 'geostack.db')}`}`
+		`[db] store ready (projects, profiles, runs, agent_turns, sessions) — ${isCloud() ? 'Turso cloud' : `local file ${join(homedir(), '.geostack', 'geostack.db')}`}`
 	)
 }
 
@@ -105,6 +123,7 @@ export interface ProjectInput {
 	description?: string
 	audience?: string
 	tone?: string
+	profileId?: string | null
 	topicMeta?: unknown
 }
 
@@ -115,14 +134,15 @@ export async function createProject(id: string, p: ProjectInput): Promise<void> 
 	const now = Date.now()
 	try {
 		await c.execute({
-			sql: `INSERT INTO projects (id, name, description, audience, tone, topic_meta, created_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			sql: `INSERT INTO projects (id, name, description, audience, tone, profile_id, topic_meta, created_at, updated_at)
+			      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			args: [
 				id,
 				p.name,
 				p.description ?? '',
 				p.audience ?? '',
 				p.tone ?? '',
+				p.profileId ?? null,
 				p.topicMeta ? JSON.stringify(p.topicMeta) : null,
 				now,
 				now
@@ -138,11 +158,12 @@ export async function updateProject(id: string, p: Partial<ProjectInput>): Promi
 	const c = getClient()
 	if (!c) return
 	const sets: string[] = []
-	const args: (string | number)[] = []
+	const args: (string | number | null)[] = []
 	if (p.name !== undefined) (sets.push('name=?'), args.push(p.name))
 	if (p.description !== undefined) (sets.push('description=?'), args.push(p.description))
 	if (p.audience !== undefined) (sets.push('audience=?'), args.push(p.audience))
 	if (p.tone !== undefined) (sets.push('tone=?'), args.push(p.tone))
+	if (p.profileId !== undefined) (sets.push('profile_id=?'), args.push(p.profileId || null))
 	if (p.topicMeta !== undefined) (sets.push('topic_meta=?'), args.push(JSON.stringify(p.topicMeta)))
 	if (!sets.length) return
 	sets.push('updated_at=?')
@@ -206,6 +227,106 @@ export async function deleteProjectRuns(projectId: string): Promise<void> {
 		)
 	} catch (err) {
 		console.warn(`[db] deleteProjectRuns failed: ${(err as Error).message}`)
+	}
+}
+
+// ---- profiles ---------------------------------------------------------------
+
+export interface ProfileInput {
+	name: string
+	description?: string
+	identity?: string
+	voice?: string
+	audience?: string
+	styleGuide?: string
+	contextNotes?: string
+}
+
+export async function createProfile(id: string, p: ProfileInput): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	const now = Date.now()
+	try {
+		await c.execute({
+			sql: `INSERT INTO profiles (id, name, description, identity, voice, audience, style_guide, context_notes, created_at, updated_at)
+			      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: [
+				id,
+				p.name,
+				p.description ?? '',
+				p.identity ?? '',
+				p.voice ?? '',
+				p.audience ?? '',
+				p.styleGuide ?? '',
+				p.contextNotes ?? '',
+				now,
+				now
+			]
+		})
+	} catch (err) {
+		console.warn(`[db] createProfile failed: ${(err as Error).message}`)
+	}
+}
+
+export async function updateProfile(id: string, p: Partial<ProfileInput>): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	const sets: string[] = []
+	const args: (string | number)[] = []
+	if (p.name !== undefined) (sets.push('name=?'), args.push(p.name))
+	if (p.description !== undefined) (sets.push('description=?'), args.push(p.description))
+	if (p.identity !== undefined) (sets.push('identity=?'), args.push(p.identity))
+	if (p.voice !== undefined) (sets.push('voice=?'), args.push(p.voice))
+	if (p.audience !== undefined) (sets.push('audience=?'), args.push(p.audience))
+	if (p.styleGuide !== undefined) (sets.push('style_guide=?'), args.push(p.styleGuide))
+	if (p.contextNotes !== undefined) (sets.push('context_notes=?'), args.push(p.contextNotes))
+	if (!sets.length) return
+	sets.push('updated_at=?')
+	args.push(Date.now(), id)
+	try {
+		await c.execute({ sql: `UPDATE profiles SET ${sets.join(', ')} WHERE id=?`, args })
+	} catch (err) {
+		console.warn(`[db] updateProfile failed: ${(err as Error).message}`)
+	}
+}
+
+export async function deleteProfile(id: string): Promise<void> {
+	const c = getClient()
+	if (!c) return
+	try {
+		await c.batch(
+			[
+				{ sql: `UPDATE projects SET profile_id = NULL WHERE profile_id = ?`, args: [id] },
+				{ sql: `DELETE FROM profiles WHERE id = ?`, args: [id] }
+			],
+			'write'
+		)
+	} catch (err) {
+		console.warn(`[db] deleteProfile failed: ${(err as Error).message}`)
+	}
+}
+
+export async function listProfiles(): Promise<Row[]> {
+	const c = getClient()
+	if (!c) return []
+	try {
+		const r = await c.execute(`SELECT * FROM profiles ORDER BY updated_at DESC`)
+		return r.rows as Row[]
+	} catch (err) {
+		console.warn(`[db] listProfiles failed: ${(err as Error).message}`)
+		return []
+	}
+}
+
+export async function getProfile(id: string): Promise<Row | null> {
+	const c = getClient()
+	if (!c) return null
+	try {
+		const r = await c.execute({ sql: `SELECT * FROM profiles WHERE id=?`, args: [id] })
+		return (r.rows[0] as Row) ?? null
+	} catch (err) {
+		console.warn(`[db] getProfile failed: ${(err as Error).message}`)
+		return null
 	}
 }
 

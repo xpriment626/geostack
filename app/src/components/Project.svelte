@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { Navigate } from '../lib/nav'
-  import { getProject, deleteProject, type Project } from '../lib/api'
+  import { getProject, deleteProject, listProfiles, updateProject, type Profile, type Project } from '../lib/api'
   import RunInspector from './RunInspector.svelte'
 
   let { projectId, navigate }: { projectId: string; navigate: Navigate } = $props()
@@ -23,6 +23,9 @@
   type Tab = 'overview' | 'ideation' | 'runs'
   let tab = $state<Tab>('overview')
   let project = $state<Project | null>(null)
+  let profiles = $state<Profile[]>([])
+  let selectedProfileId = $state('')
+  let profileSaving = $state(false)
   let error = $state<string | null>(null)
   let runSeed = $state<{ anchorClaim?: string; targetQuery?: string } | null>(null)
 
@@ -70,9 +73,22 @@
     tab = 'runs'
   }
 
+  async function setProjectProfile() {
+    if (!project) return
+    profileSaving = true
+    try {
+      project = await updateProject(projectId, { profile_id: selectedProfileId || null })
+    } catch (e) {
+      alert('Profile update failed: ' + (e as Error).message)
+    }
+    profileSaving = false
+  }
+
   onMount(async () => {
     try {
       project = await getProject(projectId)
+      selectedProfileId = project.profile_id ?? ''
+      profiles = await listProfiles()
     } catch (e) {
       error = (e as Error).message
     }
@@ -115,6 +131,20 @@
           <dt>Audience</dt><dd>{project?.audience || '—'}</dd>
           <dt>Tone</dt><dd>{project?.tone || '—'}</dd>
         </dl>
+      </div>
+      <div class="card block">
+        <div class="block-head">
+          <h2>Writer profile</h2>
+          <button class="btn btn-ghost" onclick={() => navigate({ name: 'profiles' })}>Manage</button>
+        </div>
+        <label class="select-label" for="project-profile">Default for new runs</label>
+        <select id="project-profile" bind:value={selectedProfileId} onchange={setProjectProfile} disabled={profileSaving}>
+          <option value="">No profile (one-shot default)</option>
+          {#each profiles as p}
+            <option value={p.id}>{p.name}</option>
+          {/each}
+        </select>
+        <p class="faint helper">Runs can override this; no profile keeps the current project-only behavior.</p>
       </div>
       <div class="card block">
         <h2>Target queries</h2>
@@ -209,6 +239,17 @@
   dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; }
   dt { color: var(--faint); font-size: 0.85rem; }
   dd { margin: 0; }
+  .select-label { display: block; color: var(--faint); font-size: 0.78rem; margin-bottom: 0.3rem; }
+  select {
+    width: 100%;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  .helper { margin: 0.55rem 0 0; font-size: 0.82rem; }
   .block ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.4rem; }
   .block li { font-size: 0.92rem; }
   .linkish { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }

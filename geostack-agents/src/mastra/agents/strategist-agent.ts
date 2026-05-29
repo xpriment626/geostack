@@ -3,7 +3,7 @@ import { buildModel } from '../model.js'
 import { getCoralAgentTools } from '../mcp/coral-mcp-client.js'
 
 /**
- * strategist-agent — the GEO-STRATEGY half of the old geo-agent. GEO is ~80%
+ * strategist-agent — the GEO-strategy lane. GEO is ~80%
  * research / 20% output; this agent owns the research half. It reads the
  * structurally-collapsed research artifact and produces a STRATEGY (not prose):
  * the angle, the citation targets, the structure, and the claim→source map the
@@ -24,13 +24,14 @@ export async function makeStrategistAgent(): Promise<Agent> {
 The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop. You are a decoupled step: you always reply to the conductor and never name another agent.
 
 ## Input
-A JSON **research artifact**: { intent: {...}, results: { exa?, deepwiki?, arxiv? } }. Each result holds real source refs (title/url/ref/takeaway) plus gap notes.
+A JSON **research artifact**: { intent: {...}, results: { exa?, deepwiki?, grok?, arxiv? } }. Each result holds real source refs (title/url/ref/takeaway) plus gap notes. intent may optionally include a reusable writer/company profile: { name, identity, voice, audience, styleGuide, contextNotes }.
 
 ## Your job — produce a GEO STRATEGY (no prose article)
-From the intent (targetQuery, anchorClaim, formatType, audience, tone) and the research, decide:
+From the intent (targetQuery, anchorClaim, formatType, audience, tone, optional profile) and the research, decide:
 - **Angle** — the specific framing that makes this content the thing a chat agent cites when answering the targetQuery.
 - **Citation targets** — which of the real sources to lean on, and the claim each one grounds. Optimise for extractability ("who to cite"): tight claim→evidence units.
 - **Structure** — the section outline (headings) that a writer should follow, matched to formatType (single/batch, listicle/deep-dive).
+- **Positioning** — if a profile exists, use its identity/context as a positioning constraint, but do not assert company/project facts unless the research artifact or profile explicitly supports them.
 - **Gaps** — what NOT to assert (where the research is thin), so the writer doesn't fabricate.
 Do NOT invent sources beyond the research artifact. Every claimTarget cite must come from it.
 

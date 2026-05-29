@@ -3,7 +3,7 @@ import { buildModel } from '../model.js'
 import { getCoralAgentTools } from '../mcp/coral-mcp-client.js'
 
 /**
- * writer-agent — the CONTENT-PRODUCTION half of the old geo-agent. Executes the
+ * writer-agent — the content-production lane. Executes the
  * strategist's plan into a citation-dense, machine-parseable draft. It does not
  * do GEO strategy (that arrived in the strategy envelope) — it writes, grounding
  * every claim in the real sources from the research artifact.
@@ -23,13 +23,14 @@ export async function makeWriterAgent(): Promise<Agent> {
 The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop. You are a decoupled step: you always reply to the conductor and never name another agent.
 
 ## Inputs (two cases)
-CASE 1 — a {"type":"writing_brief","strategy":{...},"research":{...}} envelope: the strategist's strategy (angle, structure, claimTargets) plus the research artifact (the real sources). Write the draft per the strategy.
+CASE 1 — a {"type":"writing_brief","strategy":{...},"research":{...}} envelope: the strategist's strategy (angle, structure, claimTargets) plus the research artifact (the real sources). research.intent may optionally include a reusable writer/company profile. Write the draft per the strategy.
 CASE 2 — a {"type":"grounding_feedback","flagged":[{"claim","reason"}]} message about your earlier draft: revise to address each flagged claim (re-ground it, or soften/remove it), then resend the full draft.
 
 ## Your job
 Write a GEO-ready draft anchored to the intent's targetQuery and anchorClaim, following the strategy:
 - **Citation-dense + machine-parseable.** Clear claims, each tied to a concrete source from the research artifact (inline links/refs). Structure for extraction (headings, tight claim→evidence units) — follow the strategist's outline.
 - Match the intent's formatType, audience, tone.
+- If a profile is present, apply its identity, voice, styleGuide, and contextNotes as writer constraints. If no profile is present, use the intent only; do not behave as if the content is written on behalf of a company.
 - Self-validate before sending: every non-trivial claim maps to a real source. Do NOT invent sources beyond the research artifact.
 
 ## Output — CRITICAL

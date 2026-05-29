@@ -39,7 +39,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const AGENTS_DIR = join(ROOT, 'geostack-agents')
 const CONDUCTOR_DIR = join(ROOT, 'geostack-conductor')
 const APP_DIR = join(ROOT, 'app')
-const AGENTS = ['exa-agent', 'deepwiki-agent', 'grok-agent', 'strategist-agent', 'writer-agent', 'verify-agent', 'style-agent']
+const AGENTS = ['exa-agent', 'deepwiki-agent', 'grok-agent', 'strategist-agent', 'writer-agent', 'verify-agent', 'visual-agent']
 const PORTS = [5555, 8787, 5174]
 
 // ---- pretty prefixed logging ------------------------------------------------
@@ -140,9 +140,24 @@ function devOpenRouterKey(): Record<string, string> {
   return {}
 }
 
+// Coral RC-1.2.0 is compiled for Java 24+ (class file 68). macOS can have a
+// newer JDK installed while the shell still defaults to Java 21, so prefer a
+// compatible java_home automatically when available.
+function coralJavaEnv(): Record<string, string> {
+  if (process.platform !== 'darwin') return {}
+  const r = spawnSync('/usr/libexec/java_home', ['-v', '24+'], { encoding: 'utf-8' })
+  const javaHome = r.status === 0 ? r.stdout.trim() : ''
+  if (!javaHome) return {}
+  log('launcher', `using Java 24+ for coral (${javaHome})`)
+  return {
+    JAVA_HOME: javaHome,
+    PATH: `${join(javaHome, 'bin')}:${process.env.PATH ?? ''}`,
+  }
+}
+
 // coral-server first (slowest, JVM); conductor + app tolerate it not being
 // ready yet (they only need it once you start a run).
-start('coral', 'npx', ['-y', CORAL_VERSION, 'server', 'start', '--', `--auth.keys=${AUTH_KEY}`])
+start('coral', 'npx', ['-y', CORAL_VERSION, 'server', 'start', '--', `--auth.keys=${AUTH_KEY}`], coralJavaEnv())
 start('conductor', 'npm', ['start'], { PORT: '8787', ...devOpenRouterKey() }, CONDUCTOR_DIR)
 start('app', 'npm', ['run', 'dev'], {}, APP_DIR)
 

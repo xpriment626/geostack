@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import { marked } from 'marked'
-  import { getProject } from '../lib/api'
+  import { getProject, listProfiles, type Profile } from '../lib/api'
 
   let {
     onBack,
@@ -41,6 +41,11 @@
   interface RunOutput { markdown?: string; grounding?: GroundingItem[] }
   interface ResearchSourceResult { source?: string; sources?: unknown[]; notes?: string }
   interface ResearchArtifact { results?: Record<string, ResearchSourceResult | undefined> }
+  interface RunIntent {
+    researchSources?: string[]
+    profileId?: string
+    profile?: { name?: string }
+  }
   interface RunDetail {
     id: string
     stage: string
@@ -49,6 +54,7 @@
     error?: string
     sessions?: SessionRow[]
     agentTurns?: AgentTurn[]
+    intent?: RunIntent | null
     research?: ResearchArtifact | null
     output?: RunOutput | null
   }
@@ -73,11 +79,15 @@
   let depth = $state<'deep-dive' | 'listicle'>('deep-dive')
   let audience = $state('engineers building multi-agent systems')
   let tone = $state('authoritative, technical, plain')
+  let selectedProfileId = $state('')
+  let useDeepwiki = $state(false)
+  let useGrok = $state(false)
 
   // When embedded in a project, the form seeds from the project's captured
   // topic metadata (and offers its claims/queries as quick picks).
   let projectClaims = $state<string[]>([])
   let projectQueries = $state<string[]>([])
+  let profiles = $state<Profile[]>([])
 
   let listTimer: ReturnType<typeof setInterval> | null = null
   let detailTimer: ReturnType<typeof setInterval> | null = null
@@ -92,6 +102,15 @@
   const fmtDur = (a?: number | null, b?: number | null) =>
     a && b ? ((b - a) / 1000).toFixed(1) + 's' : a ? 'open' : '—'
   const shortId = (s?: string) => (s ? String(s).slice(0, 8) : '')
+  const researchLabel = (sources?: string[]) => {
+    const s = sources?.length ? sources : ['exa']
+    return s.map((x) => (x === 'deepwiki' ? 'DeepWiki' : x === 'grok' ? 'Grok/X' : 'Exa')).join(' + ')
+  }
+  let researchSources = $derived.by(() => [
+    'exa',
+    ...(useDeepwiki ? ['deepwiki'] : []),
+    ...(useGrok ? ['grok'] : []),
+  ])
 
   async function loadRuns() {
     try {
@@ -139,6 +158,8 @@
         anchorClaim,
         targetQuery,
         formatType: { mode, depth },
+        researchSources,
+        profileId: selectedProfileId || undefined,
         audience,
         tone,
         raw: '# Brief\n\n' + anchorClaim,
@@ -204,6 +225,7 @@
       .filter(([, v]) => v)
       .map(([key, v]) => ({ source: v?.source ?? key, count: v?.sources?.length ?? 0, notes: v?.notes ?? '' }))
   })
+  let selectedProfile = $derived(profiles.find((p) => p.id === selectedProfileId) ?? null)
 
   async function prefillFromProject() {
     if (!projectId) return
@@ -211,6 +233,7 @@
       const p = await getProject(projectId)
       if (p.audience) audience = p.audience
       if (p.tone) tone = p.tone
+      selectedProfileId = p.profile_id ?? ''
       const meta = p.topic_meta ? JSON.parse(p.topic_meta) : {}
       projectClaims = Array.isArray(meta.anchorClaims) ? meta.anchorClaims : []
       projectQueries = Array.isArray(meta.targetQueries) ? meta.targetQueries : []
@@ -224,6 +247,14 @@
     }
   }
 
+  async function loadProfiles() {
+    try {
+      profiles = await listProfiles()
+    } catch {
+      profiles = []
+    }
+  }
+
   // Apply a curated idea seeded from the Ideation tab.
   $effect(() => {
     if (seed?.anchorClaim) anchorClaim = seed.anchorClaim
@@ -233,6 +264,7 @@
   onMount(() => {
     void loadRuns()
     listTimer = setInterval(loadRuns, 5000)
+    void loadProfiles()
     void prefillFromProject()
   })
   onDestroy(() => {
@@ -254,37 +286,64 @@
     <aside class="left">
       <h2>New run</h2>
       {#if !projectId}
-        <label>Project ID</label>
-        <input bind:value={formProjectId} />
+        <label for="run-project-id">Project ID</label>
+        <input id="run-project-id" bind:value={formProjectId} />
       {/if}
-      <label>Anchor claim</label>
+      <label for="run-anchor-claim">Anchor claim</label>
       {#if projectClaims.length > 1}
         <select class="pick" onchange={(e) => (anchorClaim = (e.currentTarget as HTMLSelectElement).value)}>
           {#each projectClaims as cl}<option value={cl}>{cl.length > 64 ? cl.slice(0, 64) + '…' : cl}</option>{/each}
         </select>
       {/if}
-      <textarea bind:value={anchorClaim}></textarea>
-      <label>Target query</label>
+      <textarea id="run-anchor-claim" bind:value={anchorClaim}></textarea>
+      <label for="run-target-query">Target query</label>
       {#if projectQueries.length > 1}
         <select class="pick" onchange={(e) => (targetQuery = (e.currentTarget as HTMLSelectElement).value)}>
           {#each projectQueries as q}<option value={q}>{q.length > 64 ? q.slice(0, 64) + '…' : q}</option>{/each}
         </select>
       {/if}
-      <input bind:value={targetQuery} />
+      <input id="run-target-query" bind:value={targetQuery} />
       <div class="row2">
         <div>
-          <label>Mode</label>
-          <select bind:value={mode}><option>single</option><option>batch</option></select>
+          <label for="run-mode">Mode</label>
+          <select id="run-mode" bind:value={mode}><option>single</option><option>batch</option></select>
         </div>
         <div>
-          <label>Depth</label>
-          <select bind:value={depth}><option>deep-dive</option><option>listicle</option></select>
+          <label for="run-depth">Depth</label>
+          <select id="run-depth" bind:value={depth}><option>deep-dive</option><option>listicle</option></select>
         </div>
       </div>
-      <label>Audience</label>
-      <input bind:value={audience} />
-      <label>Tone</label>
-      <input bind:value={tone} />
+      <div class="field-label">Research</div>
+      <div class="research-box">
+        <div class="locked">
+          <span class="source-pill locked-pill">Exa</span>
+          <span class="faint">required web enrichment</span>
+        </div>
+        <label class="check">
+          <input type="checkbox" bind:checked={useDeepwiki} />
+          <span>DeepWiki</span>
+          <small>repo/docs context</small>
+        </label>
+        <label class="check">
+          <input type="checkbox" bind:checked={useGrok} />
+          <span>Grok / X</span>
+          <small>live social discourse</small>
+        </label>
+      </div>
+      <label for="run-profile">Profile</label>
+      <select id="run-profile" bind:value={selectedProfileId}>
+        <option value="">No profile (project-only)</option>
+        {#each profiles as p}
+          <option value={p.id}>{p.name}</option>
+        {/each}
+      </select>
+      {#if selectedProfile?.identity || selectedProfile?.description}
+        <p class="profile-hint">{selectedProfile.identity || selectedProfile.description}</p>
+      {/if}
+      <label for="run-audience">Audience</label>
+      <input id="run-audience" bind:value={audience} />
+      <label for="run-tone">Tone</label>
+      <input id="run-tone" bind:value={tone} />
       <button class="start" onclick={startRun} disabled={starting}>
         {starting ? 'Starting…' : 'Start run'}
       </button>
@@ -303,10 +362,12 @@
       {/if}
       <ul class="runlist">
         {#each runs as r (r.id)}
-          <li class:active={r.id === selectedId} onclick={() => selectRun(r.id)}>
-            <div class="rid">{r.id}</div>
-            <span class="badge b-{r.stage}">{r.stage}</span>
-            <span class="muted">{r.project_id ?? ''}</span>
+          <li class:active={r.id === selectedId}>
+            <button class="runpick" onclick={() => selectRun(r.id)}>
+              <div class="rid">{r.id}</div>
+              <span class="badge b-{r.stage}">{r.stage}</span>
+              <span class="muted">{r.project_id ?? ''}</span>
+            </button>
             <button class="del-run" title="Delete run" aria-label="Delete run" onclick={(e) => delRun(e, r.id)}>×</button>
           </li>
         {:else}
@@ -330,6 +391,10 @@
             <span class="step" class:on={reached(detail.stage, s)}>{s}</span>
             {#if i < STAGES.length - 1}<span class="arrow">→</span>{/if}
           {/each}
+        </div>
+        <div class="run-meta">
+          <span><strong>Research</strong> {researchLabel(detail.intent?.researchSources)}</span>
+          <span><strong>Profile</strong> {detail.intent?.profile?.name || 'None'}</span>
         </div>
 
         <h2>Sessions <span class="muted">(spin-up / close lifecycle)</span></h2>
@@ -467,7 +532,8 @@
   .left h2:first-child { margin-top: 0; }
   .runs-head { display: flex; justify-content: space-between; align-items: center; }
   .rh-actions { display: flex; gap: 0.3rem; align-items: center; }
-  label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+  label,
+  .field-label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--muted); margin: 0.6rem 0 0.25rem; }
   input, select, textarea {
     width: 100%;
     background: var(--surface);
@@ -485,6 +551,39 @@
   textarea { resize: vertical; min-height: 3.5rem; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
   .pick { margin-bottom: 0.4rem; color: var(--muted); }
+  .research-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem;
+    background: var(--bg);
+  }
+  .locked,
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0;
+    color: var(--text);
+    font-size: 0.86rem;
+  }
+  .check { cursor: pointer; }
+  .check input { width: auto; margin: 0; }
+  .check small { color: var(--muted); margin-left: auto; font-size: 0.72rem; }
+  .source-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.08rem 0.5rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    color: var(--accent-ink);
+  }
+  .locked-pill { border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); }
+  .profile-hint { margin: 0.35rem 0 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
   button.start {
     background: var(--accent);
     color: #fff;
@@ -514,14 +613,24 @@
   .runlist { list-style: none; padding: 0; margin: 0; }
   .runlist li {
     position: relative;
-    padding: 0.55rem 0.65rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     margin-bottom: 0.4rem;
-    cursor: pointer;
     transition: border-color 0.1s ease, background 0.1s ease;
+    overflow: hidden;
   }
   .runlist li:hover { border-color: var(--faint); }
+  .runpick {
+    width: 100%;
+    display: block;
+    text-align: left;
+    background: none;
+    border: none;
+    color: inherit;
+    padding: 0.55rem 2rem 0.55rem 0.65rem;
+    font: inherit;
+    cursor: pointer;
+  }
   .del-run {
     position: absolute;
     top: 0.3rem;
@@ -562,6 +671,21 @@
   .timeline .step { padding: 0.2rem 0.65rem; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--border); color: var(--faint); font-size: 0.78rem; }
   .timeline .step.on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
   .timeline .arrow { color: var(--faint); }
+  .run-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: -0.4rem 0 1rem;
+  }
+  .run-meta span {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--muted);
+    padding: 0.25rem 0.55rem;
+    font-size: 0.78rem;
+  }
+  .run-meta strong { color: var(--text); margin-right: 0.25rem; }
   table { width: 100%; border-collapse: collapse; margin: 0.3rem 0 1rem; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
   th {

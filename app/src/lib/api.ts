@@ -21,7 +21,21 @@ export interface Project {
   description?: string
   audience?: string
   tone?: string
+  profile_id?: string | null
   topic_meta?: string | null
+  created_at?: number
+  updated_at?: number
+}
+
+export interface Profile {
+  id: string
+  name: string
+  description?: string
+  identity?: string
+  voice?: string
+  audience?: string
+  style_guide?: string
+  context_notes?: string
   created_at?: number
   updated_at?: number
 }
@@ -41,6 +55,17 @@ export const deleteProject = (id: string) =>
   api<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' })
 export const clearProjectRuns = (id: string) =>
   api<{ ok: boolean }>(`/projects/${id}/runs`, { method: 'DELETE' })
+
+// ---- profiles ---------------------------------------------------------------
+
+export const listProfiles = () => api<{ profiles: Profile[] }>('/profiles').then((r) => r.profiles)
+export const getProfile = (id: string) => api<Profile>(`/profiles/${id}`)
+export const createProfile = (body: Partial<Profile>) =>
+  api<Profile>('/profiles', { method: 'POST', body: JSON.stringify(body) })
+export const updateProfile = (id: string, body: Partial<Profile>) =>
+  api<Profile>(`/profiles/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+export const deleteProfile = (id: string) =>
+  api<{ ok: boolean }>(`/profiles/${id}`, { method: 'DELETE' })
 
 // ---- intent capture ---------------------------------------------------------
 
