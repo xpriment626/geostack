@@ -20,28 +20,16 @@ export const FormatType = z.object({
 export const RunResearchSource = z.enum(['exa', 'deepwiki', 'grok'])
 export type RunResearchSource = z.infer<typeof RunResearchSource>
 
-export const ProfileContext = z.object({
-	id: z.string(),
-	name: z.string(),
-	description: z.string().optional(),
-	identity: z.string().optional(),
-	voice: z.string().optional(),
-	audience: z.string().optional(),
-	styleGuide: z.string().optional(),
-	contextNotes: z.string().optional()
-})
-export type ProfileContext = z.infer<typeof ProfileContext>
-
 export const IntentArtifact = z.object({
 	projectId: z.string(), // stubbed for reroll 1; real once projects land
 	anchorClaim: z.string(), // the claim we're building citation authority on
 	targetQuery: z.string(), // the agent-search query space to win "who to cite" in
 	formatType: FormatType,
 	researchSources: z.array(RunResearchSource).default(['exa']),
-	profileId: z.string().optional(),
-	profile: ProfileContext.optional(),
 	audience: z.string().optional(),
 	tone: z.string().optional(),
+	additionalDirection: z.string().optional(),
+	contextLinks: z.array(z.string()).default([]),
 	raw: z.string() // full structured brief in markdown, passed verbatim to agents
 })
 export type IntentArtifact = z.infer<typeof IntentArtifact>
@@ -145,6 +133,27 @@ export const OutputEvent = z.object({
 	grounding: z.array(GroundingEntry).optional()
 })
 export type OutputEvent = z.infer<typeof OutputEvent>
+
+// ---- Revision lifecycle ------------------------------------------------------
+
+export const RevisionRequest = z.object({
+	instruction: z.string().min(1),
+	contextLinks: z.array(z.string()).default([])
+})
+export type RevisionRequest = z.infer<typeof RevisionRequest>
+
+export const RevisionRecord = z.object({
+	id: z.string(),
+	runId: z.string(),
+	status: z.enum(['running', 'done', 'failed']),
+	instruction: z.string(),
+	contextLinks: z.array(z.string()).default([]),
+	output: OutputEvent.optional(),
+	error: z.string().optional(),
+	createdAt: z.number(),
+	updatedAt: z.number()
+})
+export type RevisionRecord = z.infer<typeof RevisionRecord>
 
 // ---- Run lifecycle (conductor-owned, archived to Turso) ---------------------
 

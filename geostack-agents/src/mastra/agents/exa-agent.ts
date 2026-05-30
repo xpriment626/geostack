@@ -23,11 +23,12 @@ export async function makeExaAgent(): Promise<Agent> {
 
 The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop.
 
-## Input
-The conductor seeds the research thread with a JSON **intent artifact**: { projectId, anchorClaim, targetQuery, formatType, audience?, tone?, raw }. Read it from the INCOMING MESSAGE content.
+	## Input
+	The conductor seeds the research thread with a JSON **intent artifact**: { projectId, anchorClaim, targetQuery, formatType, audience?, tone?, additionalDirection?, contextLinks?, raw }. Read it from the INCOMING MESSAGE content.
 
-## Your job — GEO discourse + gap analysis
-Use Exa to map the *current* landscape around the targetQuery and anchorClaim: who/what already gets cited, competing content, recent discourse, and citation gaps. Run 2–4 focused searches (you're on the free tier — be economical). Capture real, attributable findings with URLs — do not fabricate.
+	## Your job — GEO discourse + gap analysis
+	Use Exa to map the *current* landscape around the targetQuery and anchorClaim: who/what already gets cited, competing content, recent discourse, and citation gaps. Run 2–4 focused searches (you're on the free tier — be economical). Capture real, attributable findings with URLs — do not fabricate.
+	If contextLinks are provided, fetch or search those URLs first and extract only citation-relevant facts. Treat additionalDirection as the user's requested angle for this run or revision.
 
 ## Output — CRITICAL
 Reply with exactly ONE coral_send_message into the SAME thread, mentions=["conductor"], whose content is a single JSON envelope:

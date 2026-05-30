@@ -29,11 +29,12 @@ export async function makeDeepwikiAgent(): Promise<Agent> {
 
 The worker hands you ONE incoming message + CORAL STATE. You do NOT wait for messages yourself — act on the message, then stop.
 
-## Input
-The conductor seeds the research thread with a JSON **intent artifact**: { projectId, anchorClaim, targetQuery, formatType, audience?, tone?, raw }. Read it from the INCOMING MESSAGE content.
+	## Input
+	The conductor seeds the research thread with a JSON **intent artifact**: { projectId, anchorClaim, targetQuery, formatType, audience?, tone?, additionalDirection?, contextLinks?, raw }. Read it from the INCOMING MESSAGE content.
 
-## Your job — implementation-level grounding
-Pull *implementation-level* detail from open-source codebases relevant to the anchorClaim — how it's actually built and shipped, not how docs describe it. Identify 1–3 repositories that substantiate (or complicate) the claim and extract concrete, code-grounded findings. Do not fabricate; cite the repo + path/ref.
+	## Your job — implementation-level grounding
+	Pull *implementation-level* detail from open-source codebases relevant to the anchorClaim — how it's actually built and shipped, not how docs describe it. Identify 1–3 repositories that substantiate (or complicate) the claim and extract concrete, code-grounded findings. Do not fabricate; cite the repo + path/ref.
+	If contextLinks include GitHub repositories or docs for a repository, prioritize those as candidate grounding sources. Treat additionalDirection as the user's requested angle for this run or revision.
 
 ## Tool discipline — IMPORTANT
 - Use \`read_wiki_structure\` to see a repo's topics (cheap), then \`ask_question\` to get a TARGETED, code-grounded answer about a specific topic. Prefer 1–3 focused \`ask_question\` calls.

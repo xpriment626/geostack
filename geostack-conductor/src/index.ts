@@ -2,9 +2,9 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import { IntentArtifact, type RunState } from './types.js'
+import { IntentArtifact, OutputEvent, ResearchArtifact, RevisionRequest, type RunState } from './types.js'
 import { chat, type ChatMessage } from './llm.js'
-import { runProduction } from './orchestrator.js'
+import { runProduction, runRevision } from './orchestrator.js'
 import {
 	isCloud,
 	initSchema,
@@ -21,11 +21,8 @@ import {
 	deleteProject,
 	deleteRun,
 	deleteProjectRuns,
-	createProfile,
-	updateProfile,
-	deleteProfile,
-	listProfiles,
-	getProfile
+	createRunRevision,
+	finishRunRevision
 } from './db.js'
 import { applyConfigToEnv, readConfig, writeConfig, redactedConfig, configPath, CONFIG_KEYS } from './local-config.js'
 
@@ -45,21 +42,57 @@ const safeJson = (v: unknown) => {
 	}
 }
 
-const textOrUndefined = (v: unknown) => {
-	const s = String(v ?? '').trim()
-	return s ? s : undefined
+const normalizeArchive = (archive: Awaited<ReturnType<typeof getRunArchive>>) => ({
+	...archive,
+	revisions: archive.revisions.map((r) => ({
+		...r,
+		contextLinks: safeJson(r.context_links) ?? [],
+		output: safeJson(r.output)
+	}))
+})
+
+const extractUrls = (text: string): string[] =>
+	Array.from(text.matchAll(/https?:\/\/[^\s),\]]+/gi), (m) => m[0].replace(/[.,;:!?]+$/, ''))
+
+const uniqueStrings = (values: readonly string[]) => {
+	const seen = new Set<string>()
+	const out: string[] = []
+	for (const value of values) {
+		const trimmed = String(value ?? '').trim()
+		if (!trimmed || seen.has(trimmed)) continue
+		seen.add(trimmed)
+		out.push(trimmed)
+	}
+	return out
 }
 
-const profileContext = (p: Record<string, unknown>) => ({
-	id: String(p.id ?? ''),
-	name: String(p.name ?? ''),
-	description: textOrUndefined(p.description),
-	identity: textOrUndefined(p.identity),
-	voice: textOrUndefined(p.voice),
-	audience: textOrUndefined(p.audience),
-	styleGuide: textOrUndefined(p.style_guide),
-	contextNotes: textOrUndefined(p.context_notes)
-})
+function runStateFromRow(row: Record<string, unknown>): RunState | null {
+	const intent = IntentArtifact.safeParse(safeJson(row.intent))
+	if (!intent.success) return null
+	const researchRaw = safeJson(row.research)
+	const outputRaw = safeJson(row.output)
+	const research = researchRaw ? ResearchArtifact.safeParse(researchRaw) : null
+	const output = outputRaw ? OutputEvent.safeParse(outputRaw) : null
+		return {
+			id: String(row.id ?? ''),
+			projectId: String(row.project_id ?? row.projectId ?? intent.data.projectId),
+			stage:
+				row.stage === 'failed'
+					? 'failed'
+					: row.stage === 'done'
+						? 'done'
+						: row.stage === 'research'
+							? 'research'
+							: row.stage === 'synthesis'
+								? 'synthesis'
+								: 'intent',
+			intent: intent.data,
+		research: research?.success ? research.data : undefined,
+		output: output?.success ? output.data : undefined,
+		createdAt: Number(row.created_at ?? Date.now()),
+		error: typeof row.error === 'string' ? row.error : undefined
+	}
+}
 
 // ---- intent capture (conductor-side chat interview) -------------------------
 
@@ -159,12 +192,7 @@ app.post('/runs', async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: 'invalid intent artifact', issues: parsed.error.issues }, 400)
 	}
-	let intent = parsed.data
-	if (intent.profileId) {
-		const profile = await getProfile(intent.profileId)
-		if (!profile) return c.json({ error: 'profile not found' }, 404)
-		intent = IntentArtifact.parse({ ...intent, profile: profileContext(profile) })
-	}
+	const intent = parsed.data
 	const run: RunState = {
 		id: `run_${randomUUID()}`,
 		projectId: intent.projectId,
@@ -232,7 +260,7 @@ app.get('/runs', async (c) => {
 /** One run: live in-memory state if active, else the persisted row; always with archive (sessions + agent_turns). */
 app.get('/runs/:id', async (c) => {
 	const id = c.req.param('id')
-	const archive = await getRunArchive(id)
+	const archive = normalizeArchive(await getRunArchive(id))
 	const live = runs.get(id)
 	if (live) return c.json({ ...live, ...archive })
 	const persisted = await getRun(id)
@@ -244,6 +272,52 @@ app.get('/runs/:id', async (c) => {
 		output: safeJson(persisted.output),
 		...archive
 	})
+})
+
+/** Start a post-draft revision. Returns immediately; poll GET /runs/:id for the updated draft/version. */
+app.post('/runs/:id/revisions', async (c) => {
+	const id = c.req.param('id')
+	if (runActive(id)) return c.json({ error: 'run in progress — wait for it to finish before revising' }, 409)
+	const body = await c.req.json().catch(() => null)
+	const instruction = String(body?.instruction ?? '').trim()
+	const contextLinks = uniqueStrings([
+		...(Array.isArray(body?.contextLinks) ? body.contextLinks.map(String) : []),
+		...extractUrls(instruction)
+	])
+	const parsed = RevisionRequest.safeParse({ instruction, contextLinks })
+	if (!parsed.success) return c.json({ error: 'invalid revision request', issues: parsed.error.issues }, 400)
+
+	const live = runs.get(id)
+	const persisted = live ? null : await getRun(id)
+	const run = live ?? (persisted ? runStateFromRow(persisted) : null)
+	if (!run) return c.json({ error: 'not found' }, 404)
+	if (run.stage !== 'done' || !run.output?.markdown || !run.research) {
+		return c.json({ error: 'run must have a completed draft before revision' }, 409)
+	}
+
+	const revisionId = `rev_${randomUUID()}`
+	await createRunRevision({
+		id: revisionId,
+		runId: id,
+		instruction: parsed.data.instruction,
+		contextLinks: parsed.data.contextLinks
+	})
+	runs.set(id, run)
+	void runRevision(run, parsed.data, {
+		log: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
+		persist: (r) => void persistRun(r),
+		onSession: (e) => {
+			if (e.phase === 'open') sessionIndex.set(e.sessionId, { runId: run.id, stage: e.stage })
+			void recordSession({ runId: run.id, ...e })
+		}
+	})
+		.then((output) => void finishRunRevision(revisionId, { status: 'done', output }))
+		.catch((err) => {
+			void finishRunRevision(revisionId, { status: 'failed', error: (err as Error).message })
+			console.error(`[${run.id}] revision error`, err)
+		})
+
+	return c.json({ revisionId, stage: run.stage })
 })
 
 /** Delete one run + its archive (turns, sessions). Blocked while the run is live. */
@@ -267,13 +341,12 @@ app.post('/projects', async (c) => {
 	if (!name) return c.json({ error: 'name required' }, 400)
 	const id = `proj_${randomUUID()}`
 	await createProject(id, {
-		name,
-		description: b.description,
-		audience: b.audience,
-		tone: b.tone,
-		profileId: b.profileId ?? b.profile_id,
-		topicMeta: b.topicMeta
-	})
+			name,
+			description: b.description,
+			audience: b.audience,
+			tone: b.tone,
+			topicMeta: b.topicMeta
+		})
 	return c.json({ id, ...(await getProject(id)) })
 })
 
@@ -290,68 +363,14 @@ app.patch('/projects/:id', async (c) => {
 	const b = await c.req.json().catch(() => null)
 	if (!b) return c.json({ error: 'invalid body' }, 400)
 	await updateProject(id, {
-		name: b.name,
-		description: b.description,
-		audience: b.audience,
-		tone: b.tone,
-		profileId: b.profileId ?? b.profile_id,
-		topicMeta: b.topicMeta
+			name: b.name,
+			description: b.description,
+			audience: b.audience,
+			tone: b.tone,
+			topicMeta: b.topicMeta
+		})
+		return c.json(await getProject(id))
 	})
-	return c.json(await getProject(id))
-})
-
-// ---- profiles ---------------------------------------------------------------
-
-/** List reusable writer/company profiles. */
-app.get('/profiles', async (c) => c.json({ profiles: await listProfiles() }))
-
-/** Create a reusable writer/company profile. */
-app.post('/profiles', async (c) => {
-	const b = await c.req.json().catch(() => null)
-	const name = (b?.name ?? '').toString().trim()
-	if (!name) return c.json({ error: 'name required' }, 400)
-	const id = `prof_${randomUUID()}`
-	await createProfile(id, {
-		name,
-		description: b.description,
-		identity: b.identity,
-		voice: b.voice,
-		audience: b.audience,
-		styleGuide: b.styleGuide ?? b.style_guide,
-		contextNotes: b.contextNotes ?? b.context_notes
-	})
-	return c.json(await getProfile(id))
-})
-
-/** Fetch one profile. */
-app.get('/profiles/:id', async (c) => {
-	const p = await getProfile(c.req.param('id'))
-	if (!p) return c.json({ error: 'not found' }, 404)
-	return c.json(p)
-})
-
-/** Patch profile fields. */
-app.patch('/profiles/:id', async (c) => {
-	const id = c.req.param('id')
-	const b = await c.req.json().catch(() => null)
-	if (!b) return c.json({ error: 'invalid body' }, 400)
-	await updateProfile(id, {
-		name: b.name,
-		description: b.description,
-		identity: b.identity,
-		voice: b.voice,
-		audience: b.audience,
-		styleGuide: b.styleGuide ?? b.style_guide,
-		contextNotes: b.contextNotes ?? b.context_notes
-	})
-	return c.json(await getProfile(id))
-})
-
-/** Delete a profile and remove it from any project defaults. */
-app.delete('/profiles/:id', async (c) => {
-	await deleteProfile(c.req.param('id'))
-	return c.json({ ok: true })
-})
 
 /** Delete a project and everything under it (its runs + archive). Blocked if a run is live. */
 app.delete('/projects/:id', async (c) => {

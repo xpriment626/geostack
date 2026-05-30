@@ -27,8 +27,8 @@ export const agentMaxSteps: Record<string, number> = {
 	'exa-agent': 12, // a few Exa searches + emit
 	'deepwiki-agent': 12, // structure/contents/ask calls + emit
 	'grok-agent': 4, // x_search fires inside the response → reason + emit
-	'strategist-agent': 8, // reason over research → strategy + emit
-	'writer-agent': 8, // write draft (+ revise on grounding feedback) + emit
+	'strategist-agent': 10, // reason over research/revision brief → strategy + emit
+	'writer-agent': 10, // write draft (+ revision/grounding feedback) + emit
 	'verify-agent': 6, // check claims + emit verdict
 	'visual-agent': 4 // presentation pass + emit output
 }

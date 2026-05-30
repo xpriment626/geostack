@@ -20,6 +20,7 @@ import {
 	OutputEvent,
 	ResearchSource,
 	tryParseEvent,
+	type RevisionRequest,
 	type RunResearchSource,
 	type RunState
 } from './types.js'
@@ -165,7 +166,7 @@ export interface RunHooks {
 	/** Persist the run record at each lifecycle transition (Turso `runs`). */
 	persist?: (run: RunState) => void
 	/** Lifecycle instrument: a session opened/closed (feeds the Turso `sessions` archive). */
-	onSession?: (e: { stage: 'research' | 'synthesis'; sessionId: string; phase: 'open' | 'closed' }) => void
+	onSession?: (e: { stage: string; sessionId: string; phase: 'open' | 'closed' }) => void
 }
 
 /**
@@ -236,6 +237,215 @@ async function researchFanout(
 			await closeSession(sessionA)
 			hooks.onSession?.({ stage: 'research', sessionId: sessionA.sessionId, phase: 'closed' })
 			log(`[${run.id}] research: session A closed`)
+		}
+	}
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+	const seen = new Set<string>()
+	const out: string[] = []
+	for (const value of values) {
+		const trimmed = value.trim()
+		if (!trimmed || seen.has(trimmed)) continue
+		seen.add(trimmed)
+		out.push(trimmed)
+	}
+	return out
+}
+
+function mergeResearchArtifact(base: ResearchArtifact, extra: ResearchArtifact): ResearchArtifact {
+	const merged: Record<string, ResearchResultEvent | undefined> = {}
+	for (const source of ['arxiv', 'deepwiki', 'exa', 'grok'] as const) {
+		const a = base.results[source]
+		const b = extra.results[source]
+		if (!a && !b) continue
+		if (!a) {
+			merged[source] = b
+			continue
+		}
+		if (!b) {
+			merged[source] = a
+			continue
+		}
+		const seen = new Set<string>()
+		const sources = [...a.sources, ...b.sources].filter((ref) => {
+			const key = ref.url || ref.ref || `${ref.title}:${ref.takeaway}`
+			if (seen.has(key)) return false
+			seen.add(key)
+			return true
+		})
+		merged[source] = {
+			type: 'research_result',
+			source,
+			sources,
+			notes: [a.notes, b.notes].filter(Boolean).join('\n\nRevision research: ') || undefined
+		}
+	}
+	return bundleResearchArtifact(extra.intent, merged)
+}
+
+export async function runRevision(run: RunState, revision: RevisionRequest, hooks: RunHooks): Promise<OutputEvent> {
+	const { log } = hooks
+	const save = () => hooks.persist?.(run)
+	if (!run.intent) throw new Error('no intent artifact')
+	if (!run.research) throw new Error('no research artifact to revise from')
+	if (!run.output?.markdown) throw new Error('no output draft to revise')
+
+	const revisionLinks = uniqueStrings(revision.contextLinks)
+	const revisionIntent = IntentArtifact.parse({
+		...run.intent,
+		additionalDirection: uniqueStrings([
+			run.intent.additionalDirection ?? '',
+			`Revision request: ${revision.instruction}`
+		]).join('\n\n'),
+		contextLinks: uniqueStrings([...(run.intent.contextLinks ?? []), ...revisionLinks]),
+		raw: [
+			run.intent.raw,
+			'',
+			'# Revision request',
+			revision.instruction,
+			revisionLinks.length ? `\nContext links:\n${revisionLinks.map((url) => `- ${url}`).join('\n')}` : ''
+		]
+			.filter(Boolean)
+			.join('\n')
+	})
+
+	let revisionResearch = ResearchArtifact.parse({ ...run.research, intent: revisionIntent })
+	if (revisionLinks.length) {
+		run.stage = 'research'
+		save()
+		const researchAgents = researchAgentsFor(revisionIntent)
+		let lastErr: unknown
+		for (let attempt = 1; attempt <= cfg.RESEARCH_ATTEMPTS; attempt++) {
+			try {
+				const extra = await researchFanout(run, revisionIntent, hooks, attempt, researchAgents)
+				revisionResearch = mergeResearchArtifact(revisionResearch, extra)
+				lastErr = undefined
+				break
+			} catch (err) {
+				lastErr = err
+				log(`[${run.id}] revision research attempt ${attempt}/${cfg.RESEARCH_ATTEMPTS} failed: ${(err as Error).message}`)
+				if (attempt < cfg.RESEARCH_ATTEMPTS) log(`[${run.id}] retrying revision research fan-out…`)
+			}
+		}
+		if (lastErr) {
+			run.stage = 'done'
+			run.error = `revision failed: ${(lastErr as Error).message}`
+			save()
+			throw lastErr
+		}
+		run.research = revisionResearch
+		save()
+	}
+
+	let sessionB: SessionIdentifier | null = null
+	try {
+		run.stage = 'synthesis'
+		save()
+		log(`[${run.id}] revision: creating synthesis session (${cfg.SYNTHESIS_AGENTS.join(', ')})`)
+		sessionB = await createSession(sessionRequest(cfg.SYNTHESIS_AGENTS))
+		hooks.onSession?.({ stage: 'synthesis', sessionId: sessionB.sessionId, phase: 'open' })
+
+		const ready = await waitForAgentsReady(sessionB, [...cfg.SYNTHESIS_AGENTS], {
+			timeoutMs: cfg.READY_TIMEOUT_MS
+		})
+		if (!ready.ok) {
+			throw new Error(
+				ready.stopped.length
+					? `revision agents failed to start: ${ready.stopped.join(', ')}`
+					: 'revision agents not ready before timeout'
+			)
+		}
+		log(`[${run.id}] revision: agents ready`)
+
+		const { thread } = await puppetCreateThread(sessionB, cfg.PROXY_NAME, {
+			threadName: 'revision',
+			participantNames: [...cfg.SYNTHESIS_AGENTS]
+		})
+
+		const seen = new Set<string>()
+		const sb = sessionB
+		const send = async (content: string, mention: string): Promise<void> => {
+			const { message } = await puppetSendMessage(sb, cfg.PROXY_NAME, {
+				threadId: thread.id,
+				content,
+				mentions: [mention]
+			})
+			seen.add(message.id)
+		}
+
+		const strategyBrief = {
+			type: 'revision_strategy_brief',
+			instruction: revision.instruction,
+			contextLinks: revisionLinks,
+			currentOutput: run.output,
+			research: revisionResearch
+		}
+		await send(JSON.stringify(strategyBrief), 'strategist-agent')
+		const strategy = await awaitEnvelope(sessionB, StrategyEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!strategy) throw new Error('revision: strategist-agent did not emit a strategy before timeout')
+		log(`[${run.id}] revision: strategy received (${strategy.claimTargets.length} claim targets)`)
+
+		await send(
+			JSON.stringify({
+				type: 'revision_writing_brief',
+				instruction: revision.instruction,
+				contextLinks: revisionLinks,
+				previousMarkdown: run.output.markdown,
+				strategy,
+				research: revisionResearch
+			}),
+			'writer-agent'
+		)
+		let draft = await awaitEnvelope(sessionB, DraftEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!draft) throw new Error('revision: writer-agent did not emit a draft before timeout')
+		log(`[${run.id}] revision: draft received (${draft.claims.length} claims)`)
+
+		let verdict: VerdictEvent | null = null
+		for (let round = 1; round <= cfg.GROUNDING_ROUNDS; round++) {
+			await send(JSON.stringify(draft), 'verify-agent')
+			verdict = await awaitEnvelope(sessionB, VerdictEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+			if (!verdict) throw new Error('revision: verify-agent did not emit a verdict before timeout')
+			const flagged = verdict.grounding.filter((g) => g.status === 'flagged')
+			log(`[${run.id}] revision: verdict round ${round}/${cfg.GROUNDING_ROUNDS} — ${flagged.length} flagged / ${verdict.grounding.length} claims`)
+			if (flagged.length === 0 || round === cfg.GROUNDING_ROUNDS) break
+			await send(
+				JSON.stringify({
+					type: 'grounding_feedback',
+					flagged: flagged.map((f) => ({ claim: f.claim, reason: f.reason ?? '' }))
+				}),
+				'writer-agent'
+			)
+			const revised = await awaitEnvelope(sessionB, DraftEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+			if (!revised) throw new Error(`revision: no revised draft (round ${round}) before timeout`)
+			draft = revised
+			log(`[${run.id}] revision: revised draft received (round ${round})`)
+		}
+		if (!verdict) throw new Error('revision: grounding loop produced no verdict')
+
+		await send(
+			JSON.stringify({ type: 'verified_draft', markdown: verdict.markdown, grounding: verdict.grounding }),
+			'visual-agent'
+		)
+		const output = await awaitEnvelope(sessionB, OutputEvent, seen, cfg.SYNTHESIS_STEP_TIMEOUT_MS)
+		if (!output) throw new Error('revision: visual-agent did not emit output before timeout')
+
+		run.output = output
+		run.stage = 'done'
+		run.error = undefined
+		save()
+		log(`[${run.id}] revision: output received (${output.markdown.length} chars) → done`)
+		return output
+	} catch (err) {
+		run.stage = 'done'
+		run.error = `revision failed: ${(err as Error).message}`
+		save()
+		throw err
+	} finally {
+		if (sessionB) {
+			await closeSession(sessionB)
+			hooks.onSession?.({ stage: 'synthesis', sessionId: sessionB.sessionId, phase: 'closed' })
+			log(`[${run.id}] revision: synthesis session closed`)
 		}
 	}
 }

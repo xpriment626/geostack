@@ -4,7 +4,6 @@
   import IntentChat from './components/IntentChat.svelte'
   import Onboarding from './components/Onboarding.svelte'
   import Project from './components/Project.svelte'
-  import Profiles from './components/Profiles.svelte'
   import Settings from './components/Settings.svelte'
   import type { Route } from './lib/nav'
 
@@ -22,9 +21,6 @@
         class="navlink"
         class:active={route.name === 'projects' || route.name === 'create' || route.name === 'project' || route.name === 'onboarding' || route.name === 'intent'}
         onclick={() => navigate({ name: 'projects' })}>Projects</button>
-      <button class="navlink" class:active={route.name === 'profiles'} onclick={() => navigate({ name: 'profiles' })}>
-        Profiles
-      </button>
       <button class="navlink" class:active={route.name === 'settings'} onclick={() => navigate({ name: 'settings' })}>
         Settings
       </button>
@@ -42,8 +38,6 @@
       <Onboarding projectId={route.projectId} {navigate} />
     {:else if route.name === 'project'}
       <Project projectId={route.projectId} {navigate} />
-    {:else if route.name === 'profiles'}
-      <Profiles {navigate} />
     {:else if route.name === 'settings'}
       <Settings {navigate} />
     {/if}

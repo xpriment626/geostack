@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import { marked } from 'marked'
-  import { getProject, listProfiles, type Profile } from '../lib/api'
+  import { getProject } from '../lib/api'
 
   let {
     onBack,
@@ -41,10 +41,20 @@
   interface RunOutput { markdown?: string; grounding?: GroundingItem[] }
   interface ResearchSourceResult { source?: string; sources?: unknown[]; notes?: string }
   interface ResearchArtifact { results?: Record<string, ResearchSourceResult | undefined> }
+  interface RevisionRow {
+    id: string
+    status: 'running' | 'done' | 'failed'
+    instruction: string
+    contextLinks?: string[]
+    context_links?: string
+    error?: string
+    created_at?: number
+    updated_at?: number
+  }
   interface RunIntent {
     researchSources?: string[]
-    profileId?: string
-    profile?: { name?: string }
+    additionalDirection?: string
+    contextLinks?: string[]
   }
   interface RunDetail {
     id: string
@@ -57,6 +67,7 @@
     intent?: RunIntent | null
     research?: ResearchArtifact | null
     output?: RunOutput | null
+    revisions?: RevisionRow[]
   }
 
   const STAGES = ['intent', 'research', 'synthesis', 'done']
@@ -79,15 +90,18 @@
   let depth = $state<'deep-dive' | 'listicle'>('deep-dive')
   let audience = $state('engineers building multi-agent systems')
   let tone = $state('authoritative, technical, plain')
-  let selectedProfileId = $state('')
+  let additionalDirection = $state('')
+  let contextLinksText = $state('')
   let useDeepwiki = $state(false)
   let useGrok = $state(false)
+  let revisionInstruction = $state('')
+  let revisionLinksText = $state('')
+  let revisionRunning = $state(false)
 
   // When embedded in a project, the form seeds from the project's captured
   // topic metadata (and offers its claims/queries as quick picks).
   let projectClaims = $state<string[]>([])
   let projectQueries = $state<string[]>([])
-  let profiles = $state<Profile[]>([])
 
   let listTimer: ReturnType<typeof setInterval> | null = null
   let detailTimer: ReturnType<typeof setInterval> | null = null
@@ -106,6 +120,15 @@
     const s = sources?.length ? sources : ['exa']
     return s.map((x) => (x === 'deepwiki' ? 'DeepWiki' : x === 'grok' ? 'Grok/X' : 'Exa')).join(' + ')
   }
+  const parseLinks = (text: string) =>
+    Array.from(
+      new Set(
+        text
+          .split(/[\n,]+/)
+          .map((x) => x.trim())
+          .filter(Boolean)
+      )
+    )
   let researchSources = $derived.by(() => [
     'exa',
     ...(useDeepwiki ? ['deepwiki'] : []),
@@ -128,7 +151,8 @@
     try {
       const run: RunDetail = await api('/runs/' + selectedId)
       detail = run
-      if (run.stage === 'done' || run.stage === 'failed') stopDetailPoll()
+      revisionRunning = !!run.revisions?.some((r) => r.status === 'running')
+      if ((run.stage === 'done' || run.stage === 'failed') && !revisionRunning) stopDetailPoll()
     } catch {
       /* conductor may be mid-restart */
     }
@@ -159,10 +183,19 @@
         targetQuery,
         formatType: { mode, depth },
         researchSources,
-        profileId: selectedProfileId || undefined,
         audience,
         tone,
-        raw: '# Brief\n\n' + anchorClaim,
+        additionalDirection: additionalDirection.trim() || undefined,
+        contextLinks: parseLinks(contextLinksText),
+        raw: [
+          '# Brief',
+          '',
+          anchorClaim,
+          additionalDirection.trim() ? `\n## Direction\n\n${additionalDirection.trim()}` : '',
+          contextLinksText.trim() ? `\n## Context links\n\n${parseLinks(contextLinksText).map((url) => `- ${url}`).join('\n')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
       }
       const { runId } = await api('/runs', {
         method: 'POST',
@@ -175,6 +208,29 @@
       alert('Start failed: ' + (e as Error).message)
     }
     starting = false
+  }
+
+  async function submitRevision() {
+    if (!detail?.id || !revisionInstruction.trim() || revisionRunning) return
+    revisionRunning = true
+    try {
+      await api(`/runs/${detail.id}/revisions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          instruction: revisionInstruction.trim(),
+          contextLinks: parseLinks(revisionLinksText),
+        }),
+      })
+      revisionInstruction = ''
+      revisionLinksText = ''
+      await renderRun()
+      if (!detailTimer) detailTimer = setInterval(renderRun, 3000)
+      void loadRuns()
+    } catch (e) {
+      revisionRunning = false
+      alert('Revision failed: ' + (e as Error).message)
+    }
   }
 
   // One-click delete for fast throwaway pruning (no confirm — runs are cheap).
@@ -225,15 +281,16 @@
       .filter(([, v]) => v)
       .map(([key, v]) => ({ source: v?.source ?? key, count: v?.sources?.length ?? 0, notes: v?.notes ?? '' }))
   })
-  let selectedProfile = $derived(profiles.find((p) => p.id === selectedProfileId) ?? null)
-
+  let latestRevision = $derived.by(() => {
+    const revisions = detail?.revisions ?? []
+    return revisions.length ? revisions[revisions.length - 1] : null
+  })
   async function prefillFromProject() {
     if (!projectId) return
     try {
       const p = await getProject(projectId)
       if (p.audience) audience = p.audience
       if (p.tone) tone = p.tone
-      selectedProfileId = p.profile_id ?? ''
       const meta = p.topic_meta ? JSON.parse(p.topic_meta) : {}
       projectClaims = Array.isArray(meta.anchorClaims) ? meta.anchorClaims : []
       projectQueries = Array.isArray(meta.targetQueries) ? meta.targetQueries : []
@@ -247,14 +304,6 @@
     }
   }
 
-  async function loadProfiles() {
-    try {
-      profiles = await listProfiles()
-    } catch {
-      profiles = []
-    }
-  }
-
   // Apply a curated idea seeded from the Ideation tab.
   $effect(() => {
     if (seed?.anchorClaim) anchorClaim = seed.anchorClaim
@@ -264,7 +313,6 @@
   onMount(() => {
     void loadRuns()
     listTimer = setInterval(loadRuns, 5000)
-    void loadProfiles()
     void prefillFromProject()
   })
   onDestroy(() => {
@@ -330,20 +378,24 @@
           <small>live social discourse</small>
         </label>
       </div>
-      <label for="run-profile">Profile</label>
-      <select id="run-profile" bind:value={selectedProfileId}>
-        <option value="">No profile (project-only)</option>
-        {#each profiles as p}
-          <option value={p.id}>{p.name}</option>
-        {/each}
-      </select>
-      {#if selectedProfile?.identity || selectedProfile?.description}
-        <p class="profile-hint">{selectedProfile.identity || selectedProfile.description}</p>
-      {/if}
       <label for="run-audience">Audience</label>
       <input id="run-audience" bind:value={audience} />
       <label for="run-tone">Tone</label>
       <input id="run-tone" bind:value={tone} />
+      <label for="run-direction">Direction</label>
+      <textarea
+        id="run-direction"
+        class="short-textarea"
+        bind:value={additionalDirection}
+        placeholder="Optional angle, constraints, or references to weave in"
+      ></textarea>
+      <label for="run-links">Source links</label>
+      <textarea
+        id="run-links"
+        class="short-textarea links-input"
+        bind:value={contextLinksText}
+        placeholder="Optional URLs, one per line"
+      ></textarea>
       <button class="start" onclick={startRun} disabled={starting}>
         {starting ? 'Starting…' : 'Start run'}
       </button>
@@ -394,7 +446,8 @@
         </div>
         <div class="run-meta">
           <span><strong>Research</strong> {researchLabel(detail.intent?.researchSources)}</span>
-          <span><strong>Profile</strong> {detail.intent?.profile?.name || 'None'}</span>
+          {#if detail.intent?.additionalDirection}<span><strong>Direction</strong> {detail.intent.additionalDirection}</span>{/if}
+          {#if detail.intent?.contextLinks?.length}<span><strong>Links</strong> {detail.intent.contextLinks.length}</span>{/if}
         </div>
 
         <h2>Sessions <span class="muted">(spin-up / close lifecycle)</span></h2>
@@ -458,6 +511,45 @@
         <h2>Output</h2>
         {#if detail.output?.markdown}
           <div class="output">{@html outputHtml}</div>
+          <div class="revision-panel">
+            <div class="revision-head">
+              <h2>Workspace revision</h2>
+              {#if latestRevision}
+                <span class="revision-state state-{latestRevision.status}">{latestRevision.status}</span>
+              {/if}
+            </div>
+            <label for="revision-instruction">Instruction</label>
+            <textarea
+              id="revision-instruction"
+              bind:value={revisionInstruction}
+              placeholder="Enrich, tighten, redirect, or add a sourced angle"
+              disabled={revisionRunning}
+            ></textarea>
+            <label for="revision-links">Source links</label>
+            <textarea
+              id="revision-links"
+              class="short-textarea links-input"
+              bind:value={revisionLinksText}
+              placeholder="Optional URLs, one per line"
+              disabled={revisionRunning}
+            ></textarea>
+            <button class="start revise" onclick={submitRevision} disabled={revisionRunning || !revisionInstruction.trim()}>
+              {revisionRunning ? 'Revising…' : 'Run revision'}
+            </button>
+            {#if latestRevision?.error}
+              <p class="err">{latestRevision.error}</p>
+            {/if}
+            {#if detail.revisions?.length}
+              <ul class="revision-list">
+                {#each detail.revisions as rev, i}
+                  <li>
+                    <span class="revision-state state-{rev.status}">v{i + 2} · {rev.status}</span>
+                    <span>{rev.instruction}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
           {#if detail.output.grounding?.length}
             <h2>Grounding</h2>
             <ul class="grounding">
@@ -549,6 +641,8 @@
     border-color: var(--accent);
   }
   textarea { resize: vertical; min-height: 3.5rem; }
+  .short-textarea { min-height: 4.6rem; }
+  .links-input { font-family: ui-monospace, monospace; font-size: 0.78rem; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
   .pick { margin-bottom: 0.4rem; color: var(--muted); }
   .research-box {
@@ -583,7 +677,6 @@
     color: var(--accent-ink);
   }
   .locked-pill { border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); }
-  .profile-hint { margin: 0.35rem 0 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
   button.start {
     background: var(--accent);
     color: #fff;
@@ -684,6 +777,9 @@
     color: var(--muted);
     padding: 0.25rem 0.55rem;
     font-size: 0.78rem;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .run-meta strong { color: var(--text); margin-right: 0.25rem; }
   table { width: 100%; border-collapse: collapse; margin: 0.3rem 0 1rem; font-size: 0.85rem; }
@@ -725,6 +821,39 @@
     padding: 0.75rem;
     border-radius: var(--radius-sm);
     overflow-x: auto;
+  }
+  .revision-panel {
+    border-top: 1px solid var(--border);
+    margin-top: 1rem;
+    padding-top: 0.2rem;
+  }
+  .revision-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .revision-head h2 { margin-top: 1rem; }
+  .revise { max-width: 14rem; margin-top: 0.7rem; }
+  .revision-state {
+    border-radius: 999px;
+    padding: 0.12rem 0.55rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+  }
+  .state-running { background: #ede9fe; color: #6d28d9; }
+  .state-done { background: #dcfce7; color: #166534; }
+  .state-failed { background: #fee2e2; color: #b91c1c; }
+  .revision-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.75rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .revision-list li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem;
+    align-items: start;
+    color: var(--muted);
+    font-size: 0.82rem;
   }
   .muted { color: var(--muted); }
   .total { font-weight: 700; color: #166534; }

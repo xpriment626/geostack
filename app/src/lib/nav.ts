@@ -7,7 +7,6 @@ export type Route =
   | { name: 'intent'; projectId: string }
   | { name: 'onboarding'; projectId: string }
   | { name: 'project'; projectId: string }
-  | { name: 'profiles' }
   | { name: 'settings' }
 
 export type Navigate = (r: Route) => void
